@@ -1,9 +1,9 @@
-name: library-rag-agent
+name: chapter-and-verse
 
 services:
   db:
     image: pgvector/pgvector:0.8.6-pg18-trixie
-    container_name: library-rag-db
+    container_name: chapter-and-verse-db
     restart: unless-stopped
     env_file: .env
     ports:

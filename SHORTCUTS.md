@@ -4,7 +4,7 @@ Run everything from the project folder. Activate the virtual environment once pe
 terminal session, then `python` means the project's Python:
 
 ```sh
-cd ~/projects/library-rag-agent
+cd ~/projects/chapter-and-verse
 source .venv/bin/activate        # or prefix each command with .venv/bin/python
 ```
 
@@ -78,7 +78,7 @@ docker compose stop         # stop it (data is kept)
 Open a `psql` prompt inside the container (no password needed):
 
 ```sh
-docker exec -it library-rag-db psql -U library_rag -d library_rag
+docker exec -it chapter-and-verse-db psql -U library_rag -d library_rag
 ```
 
 Useful inside `psql` (`\q` quits, `\x auto` makes wide rows readable):
@@ -102,7 +102,7 @@ from api_calls group by 1, 2 order by 1, 2;
 All of a book's summaries as one scrollable document, without entering `psql`:
 
 ```sh
-docker exec library-rag-db psql -U library_rag -d library_rag -At -c "
+docker exec chapter-and-verse-db psql -U library_rag -d library_rag -At -c "
   select case when level = 'book_summary' then E'# Book summary\n\n' || content
               else E'## ' || chapter_index || '. ' || chapter_title || E'\n\n' || content end
   from chunks where book_id = 10 and level in ('book_summary', 'chapter_summary')

@@ -1,4 +1,6 @@
-# Library RAG Agent
+# Chapter and Verse
+
+[![tests](https://github.com/jacobpmeyer/chapter-and-verse/actions/workflows/tests.yml/badge.svg)](https://github.com/jacobpmeyer/chapter-and-verse/actions/workflows/tests.yml)
 
 Ask questions about your own ebook library and get answers that cite the book and chapter.
 
@@ -142,7 +144,7 @@ rate limits; its free token allowance still applies. You also need a folder of E
 library is ideal, because its `.opf` files supply clean metadata.
 
 ```sh
-git clone <this repo> && cd library-rag-agent
+git clone https://github.com/jacobpmeyer/chapter-and-verse.git && cd chapter-and-verse
 cp .env.example .env              # add API keys, set LIBRARY_PATH and a Postgres password
 docker compose up -d              # Postgres + pgvector
 python3 -m venv .venv && source .venv/bin/activate
