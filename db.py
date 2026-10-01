@@ -15,12 +15,14 @@ from extract import ExtractedBook
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 
-def connect() -> psycopg.Connection:
-    if not settings.database_url:
+def connect(url: str | None = None) -> psycopg.Connection:
+    """Connect to DATABASE_URL, or to `url` (the tests use a separate database)."""
+    url = url or settings.database_url
+    if not url:
         raise SystemExit("DATABASE_URL is not set (see .env.example)")
     # autocommit: each statement commits on its own; multi-statement writes use
     # explicit `with conn.transaction()` blocks.
-    conn = psycopg.connect(settings.database_url, row_factory=dict_row, autocommit=True)
+    conn = psycopg.connect(url, row_factory=dict_row, autocommit=True)
     conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
     register_vector(conn)
     return conn

@@ -173,9 +173,11 @@ database access.
 ```sh
 pip install -r requirements-dev.txt
 pytest -m "not db"     # unit tests: no database, no API keys, under a second
+pytest                 # everything, including database tests (needs `docker compose up -d`)
 ```
 
-The unit tests never call Claude or Voyage:
+No test ever calls Claude or Voyage. CI runs both suites on every push, the database tests
+against a pgvector service container.
 - **Extraction** runs against small synthetic EPUBs built during the test. Each reproduces a
   structure found in real books: one file per chapter, MOBI conversions with chapters only as TOC
   anchors, part dividers in flat and nested TOCs, untitled openings, title-page TOC entries, and
@@ -188,6 +190,17 @@ The unit tests never call Claude or Voyage:
   - history is strictly append-only
   - the last step turns tools off
   - `max_tokens`, refusals and errors are handled without leaving the conversation invalid
+
+- **Database tests** run against a real Postgres + pgvector in a throwaway
+  `chapter_and_verse_test` database. That database is created per run and dropped afterwards, and
+  the suite refuses any database whose name doesn't end in `_test`. The tests cover:
+  - re-extraction keeping book ids and clearing paid work
+  - stage transitions, including vectors going stale when the embedding model changes
+  - search ordering and filtering, using handmade vectors
+  - the agent's five tools, with a deterministic fake embedder
+- **An end-to-end test** takes a synthetic EPUB through every stage: extraction, summaries from a
+  scripted Claude, embeddings from a fake Voyage, and finally the agent's search tool, which finds
+  the right passage and cites it by chapter.
 
 Writing these tests found real bugs, now fixed and covered by regression tests:
 - EPUBs that declare chapters as `text/html` used to extract as zero chapters, silently.

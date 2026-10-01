@@ -7,8 +7,10 @@ openings), so extraction can be tested without shipping copyrighted books.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 import pytest
 from ebooklib import epub
@@ -115,3 +117,71 @@ def build_epub(spec: EpubSpec, root: Path) -> Path:
 def make_epub(tmp_path):
     """build_epub bound to a per-test temporary directory."""
     return lambda spec: build_epub(spec, tmp_path)
+
+
+# --------------------------------------------------------------------------- #
+# Database fixtures (tests marked `db`)
+# --------------------------------------------------------------------------- #
+# A separate database, chapter_and_verse_test, is created on the same server
+# for each test session and dropped afterwards. Every table is emptied before
+# each test. Set TEST_DATABASE_URL to point elsewhere (CI does); otherwise it's
+# derived from DATABASE_URL with the database name swapped.
+
+TEST_DB_NAME = "chapter_and_verse_test"
+
+
+def _test_db_url() -> str:
+    explicit = os.getenv("TEST_DATABASE_URL")
+    if explicit:
+        return explicit
+    from config import settings
+
+    if not settings.database_url:
+        pytest.skip("no DATABASE_URL or TEST_DATABASE_URL; database tests skipped")
+    return urlunparse(urlparse(settings.database_url)._replace(path=f"/{TEST_DB_NAME}"))
+
+
+@pytest.fixture(scope="session")
+def test_db_url():
+    import psycopg
+
+    url = _test_db_url()
+    name = urlparse(url).path.lstrip("/")
+    if not name.endswith("_test"):  # never create, empty or drop a real database
+        pytest.fail(f"refusing to use {name!r} for tests: the database name must end in _test")
+    admin_url = urlunparse(urlparse(url)._replace(path="/postgres"))
+    try:
+        admin = psycopg.connect(admin_url, autocommit=True, connect_timeout=3)
+    except psycopg.OperationalError as e:
+        message = f"Postgres unavailable ({e.__class__.__name__}); run `docker compose up -d`"
+        if os.getenv("REQUIRE_DB"):  # CI: a missing database must fail, not quietly skip
+            pytest.fail(message)
+        pytest.skip(message)
+    admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+    admin.execute(f'CREATE DATABASE "{name}"')
+    yield url
+    admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+    admin.close()
+
+
+@pytest.fixture(scope="session")
+def _schema(test_db_url):
+    import db
+
+    conn = db.connect(test_db_url)
+    db.ensure_schema(conn)
+    conn.close()
+
+
+@pytest.fixture
+def conn(test_db_url, _schema, monkeypatch):
+    """A connection to an empty test database. Code that opens its own
+    connections (db.connect()) is pointed at the test database too."""
+    import db
+
+    real_connect = db.connect
+    monkeypatch.setattr(db, "connect", lambda url=None: real_connect(url or test_db_url))
+    c = real_connect(test_db_url)
+    c.execute("TRUNCATE books, chapters, chunks, api_calls RESTART IDENTITY CASCADE")
+    yield c
+    c.close()

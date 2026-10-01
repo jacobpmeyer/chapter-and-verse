@@ -82,6 +82,8 @@ hits have ranged from ~0.26 to ~0.66 depending on wording, and nonsense scores ~
 
 ```sh
 pytest -m "not db"                 # unit tests (no database, no API calls, under a second)
+pytest                             # everything, incl. database tests (needs `docker compose up -d`)
+pytest -m db                       # only the database tests (throwaway chapter_and_verse_test DB)
 pytest tests/test_extract.py -v    # one file, listing each test
 pytest -k printer                  # only tests whose name matches
 ```
