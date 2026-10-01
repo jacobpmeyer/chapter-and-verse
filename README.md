@@ -163,6 +163,31 @@ Books can be named by id or by words from the title or author. [SHORTCUTS.md](SH
 lists every command, including debugging tools (`--dry-run -v`, raw vector `search`) and direct
 database access.
 
+## Testing
+
+```sh
+pip install -r requirements-dev.txt
+pytest -m "not db"     # unit tests: no database, no API keys, under a second
+```
+
+The unit tests never call Claude or Voyage:
+- **Extraction** runs against small synthetic EPUBs built during the test. Each reproduces a
+  structure found in real books: one file per chapter, MOBI conversions with chapters only as TOC
+  anchors, part dividers in flat and nested TOCs, untitled openings, title-page TOC entries, and
+  foreign-language ad inserts.
+- **Chunking** is property-tested over randomized chapters: no paragraph is ever split or lost,
+  size limits hold, and overlap is whole paragraphs.
+- **The agent loop** runs against a fake Anthropic client that replays scripted responses. The
+  tests check:
+  - every tool call gets a result, all in one message
+  - history is strictly append-only
+  - the last step turns tools off
+  - `max_tokens`, refusals and errors are handled without leaving the conversation invalid
+
+Writing these tests found real bugs, now fixed and covered by regression tests:
+- EPUBs that declare chapters as `text/html` used to extract as zero chapters, silently.
+- In a flat TOC, a part divider not titled "Part …" was glued onto the end of the previous chapter.
+
 ## Project layout
 
 | File | Role |
@@ -176,6 +201,7 @@ database access.
 | [`db.py`](db.py), [`schema.sql`](schema.sql) | Postgres access and schema (`books`, `chapters`, `chunks`, `api_calls`) |
 | [`index.py`](index.py) | indexing CLI: `extract`, `status`, `book`, `summaries`, `search`, … |
 | [`config.py`](config.py), [`tokens.py`](tokens.py) | settings from `.env`; local token estimate |
+| [`tests/`](tests) | pytest suite: synthetic-EPUB fixtures, fake Anthropic client |
 
 ## Limitations and next steps
 

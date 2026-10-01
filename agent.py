@@ -198,9 +198,10 @@ class SessionUsage:
 # --------------------------------------------------------------------------- #
 
 class Agent:
-    def __init__(self):
-        self.client = anthropic.Anthropic()
-        self.tools = ToolRunner()
+    def __init__(self, client: anthropic.Anthropic | None = None, tools: ToolRunner | None = None):
+        # Both can be passed in, which is how the tests substitute fakes.
+        self.client = client or anthropic.Anthropic()
+        self.tools = tools or ToolRunner()
         self.messages: list[dict] = []  # the whole session's history
         self.usage = SessionUsage()
 

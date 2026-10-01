@@ -38,6 +38,9 @@ def _print_book(book: ExtractedBook, verbose: bool) -> tuple[int, int]:
             print(f"  {ch.index:3}. {ch.title[:60]:60} ~{ch.token_count:6} tok  {len(passages):3} chunks")
     size_note = f", chunk tokens min/median/max {min(sizes)}/{sorted(sizes)[len(sizes) // 2]}/{max(sizes)}" if sizes else ""
     print(f"  {len(book.chapters)} chapters, {n_chunks} passage chunks, ~{book.token_count:,} tokens{size_note}")
+    if not book.chapters:
+        print("  WARNING: no chapters were found in this EPUB. Run `python index.py extract --dry-run -v` "
+              "to see why, before indexing it.")
     return n_chunks, book.token_count
 
 

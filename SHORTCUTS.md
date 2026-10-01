@@ -59,6 +59,14 @@ python index.py search "Dr. Vincent" --book-id 10
 Levels: `passage`, `chapter_summary`, `book_summary`. Scores are cosine similarity. Correct
 hits have ranged from ~0.26 to ~0.66 depending on wording, and nonsense scores ~0.1.
 
+## Tests
+
+```sh
+pytest -m "not db"                 # unit tests (no database, no API calls, under a second)
+pytest tests/test_extract.py -v    # one file, listing each test
+pytest -k printer                  # only tests whose name matches
+```
+
 ## Database (Docker)
 
 ```sh

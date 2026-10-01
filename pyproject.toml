@@ -1,0 +1,13 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+markers = [
+    "db: needs the Postgres test database (run `docker compose up -d`); skipped if it's unavailable",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:ebooklib.*",
+    "ignore::bs4.XMLParsedAsHTMLWarning",
+    "ignore::UserWarning:ebooklib.*",
+    "ignore::FutureWarning:ebooklib.*",
+]

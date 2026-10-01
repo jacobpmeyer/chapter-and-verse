@@ -217,7 +217,13 @@ def _flatten_toc(toc, depth: int = 0) -> list[_TocEntry]:
 
 
 def _mark_boundaries(entries: list[_TocEntry]) -> None:
-    """Demote section-level TOC entries when the TOC has numbered chapters."""
+    """Demote section-level TOC entries when the TOC has numbered chapters.
+
+    At the chapter depth, an unnumbered entry is demoted to an in-chapter
+    section only if it points *inside* a file (an anchor), as MOBI conversions
+    do for section headings. An entry that starts its own file is a structural
+    unit (a part divider, an interlude) and stays a boundary.
+    """
     by_depth: dict[int, int] = {}
     for e in entries:
         if NUMBERED_RE.match(e.title):
@@ -228,7 +234,7 @@ def _mark_boundaries(entries: list[_TocEntry]) -> None:
     for e in entries:
         if e.depth > chapter_depth:
             e.boundary = False
-        elif e.depth == chapter_depth:
+        elif e.depth == chapter_depth and e.anchor is not None:
             e.boundary = bool(
                 NUMBERED_RE.match(e.title) or STRUCTURAL_RE.match(e.title) or SKIP_TITLE_RE.match(e.title)
             )
@@ -336,7 +342,10 @@ def extract_book(path: Path, content_hash: str | None = None) -> ExtractedBook:
     segments: list[_Segment] = []
     for idref, _linear in book.spine:
         item = book.get_item_with_id(idref)
-        if item is None or item.get_type() != ebooklib.ITEM_DOCUMENT:
+        # Some EPUBs (often older or converted ones) declare chapters as text/html,
+        # which ebooklib doesn't classify as documents; accept both.
+        if item is None or (item.get_type() != ebooklib.ITEM_DOCUMENT
+                            and item.media_type not in ("text/html", "application/xhtml+xml")):
             continue
         href = item.get_name()
         html = item.get_content().decode("utf-8", errors="replace")
@@ -444,4 +453,6 @@ def extract_book(path: Path, content_hash: str | None = None) -> ExtractedBook:
         kept.append(Chapter(len(kept) + 1, title, content, toks))
         log.append(("keep", ch["label"], f'chapter {len(kept)} "{title}", ~{toks} tokens'))
 
+    if not kept:
+        log.append(("warn", str(path.name), "no chapters found: check the EPUB with `extract --dry-run -v`"))
     return ExtractedBook(path, content_hash or file_hash(path), meta, kept, log)
