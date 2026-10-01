@@ -1,0 +1,16 @@
+# Secrets and local environment
+.env
+.venv/
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local artifacts: rendered diagrams, summary exports, extraction dumps
+pipeline.png
+*-summaries.md
+dump/

@@ -1,0 +1,23 @@
+name: library-rag-agent
+
+services:
+  db:
+    image: pgvector/pgvector:0.8.6-pg18-trixie
+    container_name: library-rag-db
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # PG18+ images keep PGDATA under /var/lib/postgresql/<major>/docker
+      - pgdata:/var/lib/postgresql
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  pgdata:

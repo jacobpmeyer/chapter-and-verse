@@ -1,0 +1,11 @@
+ebooklib>=0.18
+beautifulsoup4>=4.12
+lxml>=5.0
+markdownify>=0.13
+anthropic>=0.60
+psycopg[binary]>=3.2
+pgvector>=0.3
+python-dotenv>=1.0
+voyageai>=0.3
+# Optional: only needed with EMBED_PROVIDER=openai
+# openai>=1.40
