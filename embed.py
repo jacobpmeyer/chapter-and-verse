@@ -22,6 +22,7 @@ from pgvector import Vector
 
 import db
 from config import EMBED_PRICES, settings
+from stage import Progress, StageResult, report
 from tokens import estimate_tokens
 
 # Voyage's tokenizer vs our local chars/3.8 estimate, measured on Morrie
@@ -202,12 +203,12 @@ def print_estimate(n_chunks: int, tokens: int, cost: float) -> None:
     print(f"  {n_chunks:,} chunks, ~{tokens:,} tokens ≈ ${cost:.3f}")
 
 
-def execute(conn, book_ids: list[int] | None) -> bool:
-    """Embed every pending chunk for the given books. Returns True on success."""
+def execute(conn, book_ids: list[int] | None, progress: Progress | None = None) -> StageResult:
+    """Embed every pending chunk for the given books. The result is truthy on success."""
     embedder = get_embedder()
     rows = db.pending_embeddings(conn, book_ids, embedder.model_name)
     if not rows:
-        return True
+        return StageResult(True, 0.0)
     groups = batches(rows)
     done = 0
     try:
@@ -218,17 +219,16 @@ def execute(conn, book_ids: list[int] | None) -> bool:
                                    f"or the wrong dimension")
             db.save_embeddings(conn, [(r["id"], Vector(v)) for r, v in zip(group, vectors)], embedder.model_name)
             done += len(group)
-            print(f"  batch {i}/{len(groups)}: {done}/{len(rows)} chunks embedded", flush=True)
+            report(progress, f"  batch {i}/{len(groups)}: {done}/{len(rows)} chunks embedded")
     except Exception as e:
         # Saved batches stay saved; a re-run picks up the rest.
-        print(f"  FAILED after {done}/{len(rows)} chunks: {type(e).__name__}: {e}; re-run to resume")
-        return False
-    finally:
-        cost = embedder.tokens_used * EMBED_PRICES.get(embedder.model_name, 0.0) / 1e6
-        print(f"  Actual usage: {embedder.tokens_used:,} tokens ≈ ${cost:.3f}")
+        report(progress, f"  FAILED after {done}/{len(rows)} chunks: {type(e).__name__}: {e}; re-run to resume")
+        return StageResult(False, embedder.tokens_used * EMBED_PRICES.get(embedder.model_name, 0.0) / 1e6)
+    cost = embedder.tokens_used * EMBED_PRICES.get(embedder.model_name, 0.0) / 1e6
+    print(f"  Actual usage: {embedder.tokens_used:,} tokens ≈ ${cost:.3f}")
     for book_id in sorted({r["book_id"] for r in rows}):
         db.mark_embedded(conn, book_id, embedder.model_name)
-    return True
+    return StageResult(True, cost)
 
 
 def run(book_ids: list[int] | None, yes: bool, dry_run: bool) -> None:

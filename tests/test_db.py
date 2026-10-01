@@ -241,3 +241,55 @@ def test_search_filters_by_book_level_and_k(conn, two_books):
 def test_searchable_books_are_those_with_current_embeddings(conn, two_books):
     assert [b["title"] for b in db.searchable_books(conn, MODEL)] == ["Book A", "Book B"]
     assert [b["title"] for b in db.searchable_books(conn, "unused-model")] == []
+
+
+# --------------------------------------------------------------------------- #
+# Library-relative paths
+# --------------------------------------------------------------------------- #
+
+def test_paths_are_stored_relative_to_the_library(conn, monkeypatch, tmp_path):
+    monkeypatch.setattr(db, "settings", dataclasses.replace(db.settings, library_path=tmp_path))
+    book = make_book(path=tmp_path / "Author" / "Title" / "Title.epub")
+    book_id = db.save_extracted_book(conn, book)
+    assert db.get_book(conn, book_id)["source_path"] == "Author/Title/Title.epub"
+    assert db.stored_hash(conn, book.path) == "hash-1"
+    assert db.library_file("Author/Title/Title.epub") == book.path
+    assert db.library_file("/elsewhere/x.epub").as_posix() == "/elsewhere/x.epub"
+
+
+def test_schema_migrates_absolute_paths_to_relative(conn, monkeypatch, tmp_path):
+    monkeypatch.setattr(db, "settings", dataclasses.replace(db.settings, library_path=tmp_path / "my_lib%"))
+    conn.execute("INSERT INTO books (title, source_path, content_hash, token_count, chapter_count) VALUES "
+                 "('In library', %s, 'h', 1, 1), ('Elsewhere', '/other/b.epub', 'h', 1, 1), "
+                 "('Lookalike', %s, 'h', 1, 1)",
+                 (f"{tmp_path}/my_lib%/A/a.epub", f"{tmp_path}/my_libX/A/c.epub"))
+    db.ensure_schema(conn)
+    db.ensure_schema(conn)  # idempotent
+    paths = {r["title"]: r["source_path"] for r in conn.execute("SELECT title, source_path FROM books")}
+    assert paths == {"In library": "A/a.epub", "Elsewhere": "/other/b.epub",
+                     "Lookalike": f"{tmp_path}/my_libX/A/c.epub"}  # % and _ in the path are matched literally
+
+
+def test_a_renamed_book_keeps_its_summaries(conn, monkeypatch, tmp_path, make_epub):
+    import jobs
+    from extract import extract_book, file_hash
+    from tests.conftest import Doc, EpubSpec, paragraphs
+
+    for module in (db, jobs):
+        monkeypatch.setattr(module, "settings", dataclasses.replace(module.settings, library_path=tmp_path))
+    spec = EpubSpec(title="Old Title", docs=[Doc("ch1.xhtml", "<h2>One</h2>" + paragraphs(3))],
+                    toc=[("One", "ch1.xhtml")], opf={"uuid": "calibre-uuid-1"})
+    old_path = make_epub(spec)
+    book_id = db.save_extracted_book(conn, extract_book(old_path))
+    db.save_chapter_summary(conn, book_id, 1, "One", "paid summary", 2, "m")
+
+    # Calibre moves the file when the title changes; the EPUB bytes are the same.
+    new_path = tmp_path / "Ada Author" / "New Title" / "New Title - Ada Author.epub"
+    new_path.parent.mkdir(parents=True)
+    old_path.rename(new_path)
+    old_path.with_suffix(".opf").rename(new_path.with_suffix(".opf"))
+
+    assert jobs.check_file(conn, new_path, file_hash(new_path)) == "moved"
+    assert db.get_book(conn, book_id)["source_path"] == "Ada Author/New Title/New Title - Ada Author.epub"
+    assert db.get_chapter_summaries(conn, book_id) == {1: "paid summary"}
+    assert jobs.check_file(conn, new_path, file_hash(new_path)) == "unchanged"

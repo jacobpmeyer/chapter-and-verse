@@ -77,6 +77,12 @@ sequenceDiagram
     AG-->>You: answer, citing book and chapter titles
 ```
 
+The HTTP API (`api.py`) runs this same flow:
+- **Indexing:** `POST /books/{id}/index` runs step 3 through `jobs.py`, the same code as
+  `index.py book`.
+- **Questions:** `POST /ask` runs step 4's agent loop, storing the conversation in Postgres
+  instead of keeping it in memory.
+
 ## The same flow in words
 
 | Step | Command | Files involved | External calls | Writes |

@@ -19,5 +19,23 @@ services:
       retries: 10
       start_period: 10s
 
+  api:
+    build: .
+    container_name: chapter-and-verse-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Inside Docker the database is the `db` service, not localhost.
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      # The library is mounted read-only at /library (book paths are stored relative to it).
+      LIBRARY_PATH: /library
+    volumes:
+      - ${LIBRARY_PATH:?set LIBRARY_PATH in .env}:/library:ro
+    ports:
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   pgdata:

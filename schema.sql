@@ -64,3 +64,37 @@ CREATE TABLE IF NOT EXISTS api_calls (
     output_tokens  integer NOT NULL,
     created_at     timestamptz NOT NULL DEFAULT now()
 );
+
+-- Added with the HTTP API: the cost of each call (agent calls use prompt caching,
+-- so cost can't be recomputed from input/output tokens alone).
+ALTER TABLE api_calls ADD COLUMN IF NOT EXISTS cost_usd numeric;
+ALTER TABLE api_calls ADD COLUMN IF NOT EXISTS cache_read_tokens integer NOT NULL DEFAULT 0;
+ALTER TABLE api_calls ADD COLUMN IF NOT EXISTS cache_write_tokens integer NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS api_calls_created_idx ON api_calls (created_at);
+
+-- Agent conversations, so a question can continue an earlier one from any device.
+-- `messages` is the full history sent to the model, append-only.
+CREATE TABLE IF NOT EXISTS conversations (
+    id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    title      text NOT NULL,
+    messages   jsonb NOT NULL DEFAULT '[]',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Indexing jobs started through the API.
+CREATE TABLE IF NOT EXISTS jobs (
+    id           bigserial PRIMARY KEY,
+    book_id      integer NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    kind         text NOT NULL DEFAULT 'index',
+    status       text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'done', 'failed')),
+    estimate     jsonb NOT NULL,
+    max_cost_usd numeric NOT NULL,
+    cost_usd     numeric,
+    progress     text,
+    error        text,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+-- At most one queued or running job per book.
+CREATE UNIQUE INDEX IF NOT EXISTS jobs_one_active_per_book ON jobs (book_id) WHERE status IN ('queued', 'running');

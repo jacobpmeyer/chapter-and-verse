@@ -1,0 +1,12 @@
+.env
+.venv/
+.git/
+.github/
+.pytest_cache/
+__pycache__/
+tests/
+*.md
+*.gif
+*.png
+demo.tape
+db/

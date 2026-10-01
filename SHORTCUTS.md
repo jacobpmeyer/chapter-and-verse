@@ -21,6 +21,27 @@ Inside it: `/usage` shows tokens and cost so far, `/reset` starts a new conversa
 (or Ctrl-D) exits. Ctrl-C during an answer drops just that question.
 `AGENT_THINKING_DISPLAY=omitted python agent.py` hides the reasoning summaries for one session.
 
+## HTTP API and web page
+
+```sh
+docker compose up -d --build       # Postgres + API (rebuild after code changes)
+docker compose logs -f api         # follow the API's log (one line per request, no secrets)
+docker compose stop api            # stop just the API
+```
+
+- **Web page:** http://localhost:8080. From your phone on the same Wi-Fi, use
+  http://<your Mac's address>:8080 (`ipconfig getifaddr en0` shows the address).
+- **API key:** the page asks for it once. It's the `API_KEYS` value in `.env`.
+- **API docs:** http://localhost:8080/docs
+
+```sh
+KEY=$(grep '^API_KEYS=' .env | cut -d= -f2 | cut -d, -f1)
+curl -H "Authorization: Bearer $KEY" localhost:8080/books
+curl -X POST localhost:8080/ask -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+     -d '{"question": "Who delivers the eels?"}'
+curl -H "Authorization: Bearer $KEY" localhost:8080/books/7/estimate      # free
+```
+
 ## Reading summaries (free, no API calls)
 
 ```sh

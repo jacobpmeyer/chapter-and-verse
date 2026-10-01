@@ -84,6 +84,7 @@ def cmd_extract(args: argparse.Namespace) -> None:
     conn = None
     if not args.dry_run:
         import db
+        import jobs
 
         conn = db.connect()
         db.ensure_schema(conn)
@@ -92,15 +93,21 @@ def cmd_extract(args: argparse.Namespace) -> None:
     for path in paths:
         digest = file_hash(path)
         if conn is not None:
-            unchanged = db.stored_hash(conn, str(path)) == digest
-            if unchanged and not args.force:
-                print(f"\n{path.name}: unchanged, skipped")
-                totals["skipped"] += 1
-                continue
-            if unchanged and db.has_paid_work(conn, str(path)):
-                # Re-extracting would delete summaries/embeddings that cost money.
-                print(f"\n{path.name}: unchanged and already summarized/embedded; --force skips it "
-                      "(use `python index.py book <id> --redo-summaries` to rebuild deliberately)")
+            status = jobs.check_file(conn, path, digest)
+            skip = None
+            if status == "moved":
+                skip = "moved or renamed in the library; path updated, summaries kept"
+            elif status == "unchanged" and not args.force:
+                skip = "unchanged, skipped"
+            elif status == "unchanged" and db.has_paid_work(conn, path):
+                # Nothing changed, and re-extracting would delete summaries/embeddings that cost money.
+                skip = ("unchanged and already summarized/embedded; --force skips it "
+                        "(use `python index.py book <id> --redo-summaries` to rebuild deliberately)")
+            elif status == "changed_has_paid_work" and not args.force:
+                skip = ("CHANGED, but it has summaries/embeddings that re-extracting would discard. "
+                        "Run `python index.py backup`, then `extract --force` to re-extract it")
+            if skip:
+                print(f"\n{path.name}: {skip}")
                 totals["skipped"] += 1
                 continue
         book = _extract_one(conn, path, digest, args.verbose, args.dump)
@@ -149,7 +156,7 @@ def _print_status(conn, client) -> None:
         print(f"{r['id']:>3}  {r['stage']:12} {tokens:>9}  {progress:>9}  {'$%.2f' % cost:>9}  "
               f"{r['title'][:60]} — {', '.join(r['authors'])}")
     known = {r["source_path"] for r in rows}
-    new = [p for p in find_epubs(settings.library_path) if str(p) not in known]
+    new = [p for p in find_epubs(settings.library_path) if db.library_key(p) not in known]
     for path in new:
         print(f"{'-':>3}  {'not extracted':12} {'':>9}  {'':>9}  {'':>9}  {path.name}")
     print(f"\nCost to fully index everything remaining ≈ ${total:.2f} "
@@ -238,6 +245,7 @@ def cmd_book(args: argparse.Namespace) -> None:
 
     import db
     import embed
+    import jobs
     import summarize
 
     conn = db.connect()
@@ -246,7 +254,7 @@ def cmd_book(args: argparse.Namespace) -> None:
     print(f"[{book['id']}] {book['title']} — {', '.join(book['authors'])}")
 
     # Refresh extraction if the EPUB changed since it was indexed (free, keeps the id).
-    path = Path(book["source_path"])
+    path = db.library_file(book["source_path"])
     if not path.exists():
         print(f"  warning: {path} no longer exists; using the stored text")
     else:
@@ -265,16 +273,15 @@ def cmd_book(args: argparse.Namespace) -> None:
     # One combined estimate (summaries + embeddings) and one confirmation.
     client = anthropic.Anthropic()
     print("Counting tokens (count_tokens is free)...")
-    plans = summarize.plan(conn, client, [book["id"]])
-    summary_cost = summarize.print_estimate(conn, plans) if plans else 0.0
-    future = sum(len(p.pending_chapters) + p.needs_book_summary for p in plans)
-    n_embed, embed_tokens, embed_cost = embed.estimate(conn, [book["id"]], future)
-    if n_embed:
-        embed.print_estimate(n_embed, embed_tokens, embed_cost)
-    if not plans and not n_embed:
+    est = jobs.estimate_book(conn, client, book["id"])
+    if est.plans:
+        summarize.print_estimate(conn, est.plans)
+    if est.embed_chunks:
+        embed.print_estimate(est.embed_chunks, est.embed_tokens, est.embed_cost)
+    if est.nothing_to_do:
         print("\nNothing to do: this book is fully indexed.")
         return
-    print(f"\nTOTAL for this book ≈ ${summary_cost + embed_cost:.2f}")
+    print(f"\nTOTAL for this book ≈ ${est.total:.2f}")
     if args.dry_run:
         print("DRY RUN: nothing generated.")
         return
@@ -282,13 +289,11 @@ def cmd_book(args: argparse.Namespace) -> None:
         print("Aborted.")
         return
 
-    if plans and not summarize.execute(client, plans):
-        sys.exit("Summaries didn't finish; embeddings skipped. Re-run the same command to resume.")
-    if n_embed:
-        print("\nEmbedding...")
-        if not embed.execute(conn, [book["id"]]):
-            sys.exit(1)
-    print(f"\n[{book['id']}] {book['title']}: stage {db.book_stages(conn, [book['id']])[0]['stage']}")
+    result = jobs.index_book(conn, client, est)
+    if not result.ok:
+        sys.exit(f"Stopped: {result.error}.")
+    print(f"\n[{book['id']}] {book['title']}: stage {db.book_stages(conn, [book['id']])[0]['stage']} "
+          f"(spent ≈ ${result.cost_usd:.2f})")
 
 
 def _require_selection(args: argparse.Namespace, command: str) -> None:
@@ -371,7 +376,8 @@ def main() -> None:
     p.add_argument("-v", "--verbose", action="store_true", help="show kept/skipped items and chapters")
     p.add_argument("--dump", metavar="DIR", help="write each chapter's Markdown and chunks to DIR")
     p.add_argument("--force", action="store_true",
-                   help="re-extract unchanged books too (skips books that already have summaries or embeddings)")
+                   help="re-extract unchanged books (except those with summaries/embeddings), and changed "
+                      "books even if that discards their summaries/embeddings")
     p.set_defaults(func=cmd_extract)
 
     p = sub.add_parser("status", help="stage and cost-to-finish for every book")

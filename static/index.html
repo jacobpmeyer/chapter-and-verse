@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Chapter and Verse</title>
+<style>
+  :root {
+    --bg: #faf8f5; --panel: #ffffff; --text: #1f1d1a; --muted: #77716a; --line: #e7e2da;
+    --accent: #6b4f2a; --accent-text: #ffffff; --tool: #2f6f73; --warn: #9a3412; --ok: #2f6f3e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161513; --panel: #1f1d1a; --text: #ece7df; --muted: #9b948a; --line: #34302b;
+            --accent: #c9a46a; --accent-text: #161513; --tool: #7fc4c7; --warn: #f0a07a; --ok: #8fd19e; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; background: var(--bg); border-bottom: 1px solid var(--line);
+           padding: 12px 16px; display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 17px; margin: 0; font-family: Georgia, "Times New Roman", serif; flex: 1; }
+  nav button { background: none; border: 0; color: var(--muted); font: inherit; padding: 6px 8px; cursor: pointer; }
+  nav button[aria-current="true"] { color: var(--text); font-weight: 600; border-bottom: 2px solid var(--accent); }
+  main { max-width: 760px; margin: 0 auto; padding: 16px 16px 140px; }
+  .turn { margin-bottom: 28px; }
+  .question { font-weight: 600; margin-bottom: 8px; }
+  .trace { color: var(--muted); font-size: 14px; margin: 6px 0; }
+  .trace .call { color: var(--tool); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+                 overflow-wrap: anywhere; }
+  .trace .thinking { font-style: italic; white-space: pre-wrap; }
+  .answer { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .meta { color: var(--muted); font-size: 13px; margin-top: 6px; }
+  .notice { color: var(--warn); font-size: 14px; }
+  form.ask { position: fixed; left: 0; right: 0; bottom: 0; background: var(--bg); border-top: 1px solid var(--line);
+             padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); }
+  form.ask .row { max-width: 760px; margin: 0 auto; display: flex; gap: 8px; }
+  textarea, input { flex: 1; font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
+                    border-radius: 10px; padding: 10px 12px; resize: none; min-width: 0; }
+  button.primary { background: var(--accent); color: var(--accent-text); border: 0; border-radius: 10px;
+                   padding: 10px 16px; font: inherit; font-weight: 600; cursor: pointer; }
+  button.secondary { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px;
+                     padding: 8px 12px; font: inherit; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; align-items: center; }
+  .book { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+  .book h2 { font-size: 16px; margin: 0 0 2px; font-family: Georgia, "Times New Roman", serif; }
+  .book .by { color: var(--muted); font-size: 14px; }
+  .stage { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line);
+           margin: 8px 8px 0 0; }
+  .stage.embedded { color: var(--ok); border-color: currentColor; }
+  .job { font-size: 14px; margin-top: 8px; color: var(--muted); white-space: pre-wrap; }
+  .empty { color: var(--muted); text-align: center; margin-top: 48px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Chapter and Verse</h1>
+  <nav>
+    <button id="tab-ask" aria-current="true">Ask</button>
+    <button id="tab-library">Library</button>
+  </nav>
+</header>
+
+<main id="view-ask">
+  <div class="toolbar">
+    <button class="secondary" id="new-convo">New conversation</button>
+    <span class="meta" id="convo-label"></span>
+  </div>
+  <div id="turns"><p class="empty" id="ask-empty">Ask about any indexed book. Answers cite the chapter.</p></div>
+</main>
+
+<main id="view-library" class="hidden">
+  <div class="toolbar">
+    <button class="secondary" id="scan">Scan library</button>
+    <span class="meta" id="scan-result"></span>
+  </div>
+  <div id="books"></div>
+</main>
+
+<form class="ask" id="ask-form">
+  <div class="row">
+    <textarea id="question" rows="1" placeholder="What are the themes of…" required></textarea>
+    <button class="primary" id="send">Ask</button>
+  </div>
+</form>
+
+<script>
+(() => {
+  // ------------------------------------------------------------------ helpers
+  const $ = (id) => document.getElementById(id);
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} },
+  };
+  const el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;  // never innerHTML: model output is untrusted
+    return n;
+  };
+
+  function apiKey() {
+    let key = store.get("cav-key");
+    if (!key) {
+      key = prompt("API key for this Chapter and Verse server:");
+      if (key) store.set("cav-key", key.trim());
+    }
+    return key;
+  }
+
+  async function api(path, options = {}) {
+    const res = await fetch(path, {
+      ...options,
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey()}`, ...(options.headers || {}) },
+    });
+    if (res.status === 401) { store.set("cav-key", null); throw new Error("API key rejected; reload to enter it again."); }
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch {}
+      throw new Error(detail);
+    }
+    return res;
+  }
+
+  // --------------------------------------------------------------------- tabs
+  function show(tab) {
+    const ask = tab === "ask";
+    $("view-ask").classList.toggle("hidden", !ask);
+    $("ask-form").classList.toggle("hidden", !ask);
+    $("view-library").classList.toggle("hidden", ask);
+    $("tab-ask").setAttribute("aria-current", ask);
+    $("tab-library").setAttribute("aria-current", !ask);
+    if (!ask) loadBooks();
+  }
+  $("tab-ask").onclick = () => show("ask");
+  $("tab-library").onclick = () => show("library");
+
+  // ---------------------------------------------------------------------- ask
+  let conversationId = store.get("cav-conversation");
+
+  function turnView(question) {
+    $("ask-empty")?.remove();
+    const turn = el("div", "turn");
+    turn.append(el("div", "question", question));
+    const trace = el("div", "trace");
+    const answer = el("div", "answer");
+    const meta = el("div", "meta");
+    turn.append(trace, answer, meta);
+    $("turns").append(turn);
+    return { trace, answer, meta };
+  }
+
+  async function loadConversation() {
+    $("convo-label").textContent = "";
+    if (!conversationId) return;
+    try {
+      const convo = await (await api(`/conversations/${conversationId}`)).json();
+      $("convo-label").textContent = convo.title;
+      for (const t of convo.turns) turnView(t.question).answer.textContent = t.answer;
+    } catch { conversationId = null; store.set("cav-conversation", null); }
+  }
+
+  $("new-convo").onclick = () => {
+    conversationId = null;
+    store.set("cav-conversation", null);
+    $("turns").replaceChildren(el("p", "empty", "New conversation."));
+    $("convo-label").textContent = "";
+  };
+
+  function handle(event, view, state) {
+    switch (event.type) {
+      case "conversation":
+        conversationId = event.conversation_id;
+        store.set("cav-conversation", conversationId);
+        break;
+      case "block_start":
+        state.block = event.block;
+        if (event.block === "thinking") { state.thinking = el("div", "thinking"); view.trace.append(state.thinking); }
+        break;
+      case "thinking": state.thinking?.append(event.text); break;
+      case "text":
+        if (state.newReply) { view.answer.textContent = ""; state.newReply = false; }
+        view.answer.append(event.text);
+        break;
+      case "tool_call": {
+        const args = Object.entries(event.input).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ");
+        view.trace.append(el("div", "call", `→ ${event.name}(${args})`));
+        state.newReply = true;
+        break;
+      }
+      case "tool_result":
+        view.trace.append(el("div", null, `  ← ${event.is_error ? "error: " : ""}${event.summary}`));
+        break;
+      case "notice": view.meta.append(el("div", "notice", event.message)); break;
+      case "error": view.meta.append(el("div", "notice", event.message)); break;
+      case "done":
+        view.meta.append(`${event.usage.calls} model calls · $${event.usage.cost_usd.toFixed(3)}`);
+        break;
+    }
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+
+  $("ask-form").onsubmit = async (e) => {
+    e.preventDefault();
+    const question = $("question").value.trim();
+    if (!question) return;
+    $("question").value = "";
+    $("send").disabled = true;
+    const view = turnView(question);
+    const state = { newReply: false };
+    try {
+      const res = await api("/ask", {
+        method: "POST",
+        body: JSON.stringify({ question, conversation_id: conversationId, stream: true }),
+      });
+      // Server-Sent Events over fetch (EventSource can't send headers or a POST body).
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let split;
+        while ((split = buffer.indexOf("\n\n")) >= 0) {
+          const frame = buffer.slice(0, split);
+          buffer = buffer.slice(split + 2);
+          const data = frame.split("\n").find((l) => l.startsWith("data: "));
+          const type = frame.split("\n").find((l) => l.startsWith("event: "));
+          if (data && type) handle({ ...JSON.parse(data.slice(6)), type: type.slice(7) }, view, state);
+        }
+      }
+    } catch (err) {
+      view.meta.append(el("div", "notice", err.message));
+    } finally {
+      $("send").disabled = false;
+    }
+  };
+
+  $("question").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("ask-form").requestSubmit(); }
+  });
+
+  // ------------------------------------------------------------------ library
+  async function loadBooks() {
+    const list = $("books");
+    try {
+      const books = await (await api("/books")).json();
+      list.replaceChildren(...books.map(bookCard));
+      if (!books.length) list.append(el("p", "empty", "No books yet. Add EPUBs to the library, then Scan."));
+    } catch (err) {
+      list.replaceChildren(el("p", "notice", err.message));
+    }
+  }
+
+  function bookCard(b) {
+    const card = el("div", "book");
+    card.append(el("h2", null, b.title), el("div", "by", b.authors.join(", ")));
+    card.append(el("span", `stage ${b.stage}`, b.stage));
+    card.append(el("span", "meta", `${b.chapters} chapters · ${b.tokens.toLocaleString()} tokens`));
+    const job = el("div", "job");
+    if (b.stage !== "embedded") {
+      const btn = el("button", "secondary", "Index…");
+      btn.style.marginTop = "10px";
+      btn.onclick = () => indexBook(b, btn, job);
+      card.append(el("div", null), btn);
+    }
+    card.append(job);
+    return card;
+  }
+
+  async function indexBook(book, btn, jobView) {
+    btn.disabled = true;
+    jobView.textContent = "Estimating (free)…";
+    try {
+      const est = await (await api(`/books/${book.id}/estimate`)).json();
+      // Allow the estimate plus a margin; the server refuses anything above this.
+      const limit = Math.ceil(est.total_usd * 1.25 * 100) / 100;
+      const ok = confirm(`Index "${book.title}"?\n\nEstimated cost: $${est.total_usd.toFixed(2)} ` +
+        `(${est.summaries.chapters_to_summarize} chapter summaries + embeddings).\nIt won't start if the estimate ` +
+        `rises above $${limit.toFixed(2)}.`);
+      if (!ok) { jobView.textContent = ""; btn.disabled = false; return; }
+      const started = await (await api(`/books/${book.id}/index`, {
+        method: "POST", body: JSON.stringify({ max_cost_usd: limit }),
+      })).json();
+      if (!started.job_id) { jobView.textContent = started.message; return; }
+      pollJob(started.job_id, jobView);
+    } catch (err) {
+      jobView.textContent = err.message;
+      btn.disabled = false;
+    }
+  }
+
+  async function pollJob(id, view) {
+    try {
+      const job = await (await api(`/jobs/${id}`)).json();
+      view.textContent = `Job ${id}: ${job.status}` + (job.progress ? ` · ${job.progress}` : "") +
+        (job.cost_usd != null ? ` · spent $${job.cost_usd.toFixed(2)}` : "") + (job.error ? `\n${job.error}` : "");
+      if (job.status === "queued" || job.status === "running") setTimeout(() => pollJob(id, view), 3000);
+      else if (job.status === "done") loadBooks();
+    } catch (err) {
+      view.textContent = err.message;
+    }
+  }
+
+  $("scan").onclick = async () => {
+    $("scan").disabled = true;
+    $("scan-result").textContent = "Scanning…";
+    try {
+      const { counts } = await (await api("/library/scan", { method: "POST" })).json();
+      $("scan-result").textContent = Object.entries(counts).map(([k, v]) => `${v} ${k.replaceAll("_", " ")}`).join(", ");
+      loadBooks();
+    } catch (err) {
+      $("scan-result").textContent = err.message;
+    } finally {
+      $("scan").disabled = false;
+    }
+  };
+
+  loadConversation();
+})();
+</script>
+</body>
+</html>

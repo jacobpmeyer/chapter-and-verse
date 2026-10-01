@@ -58,6 +58,13 @@ class Settings:
     # voyage-4-large: correct hits 0.26-0.66 depending on wording, nonsense ~0.1.
     weak_match_threshold: float = _float("WEAK_MATCH_THRESHOLD", 0.2)
 
+    # HTTP API
+    api_keys: tuple = tuple(k.strip() for k in os.getenv("API_KEYS", "").split(",") if k.strip())
+    auth_disabled: bool = os.getenv("AUTH_DISABLED", "") == "1"  # local development only
+    cors_origins: tuple = tuple(o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip())
+    daily_budget_usd: float = _float("DAILY_BUDGET_USD", 5.0)
+    job_runner: str = os.getenv("JOB_RUNNER", "thread")  # thread | (later) cloud_run
+
 
 settings = Settings()
 

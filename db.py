@@ -7,6 +7,7 @@ from pathlib import Path
 import psycopg
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from chunk import chunk_chapter
 from config import settings
@@ -39,11 +40,46 @@ def ensure_schema(conn: psycopg.Connection) -> None:
             f"chunks.embedding is vector({row['atttypmod']}) but EMBED_DIM={settings.embed_dim}. "
             "Changing embedding dimensions needs a migration and a full re-embed."
         )
+    # Migration: book paths used to be stored absolute; store them relative to LIBRARY_PATH.
+    prefix = str(settings.library_path).rstrip("/") + "/"
+    like = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    conn.execute("UPDATE books SET source_path = substr(source_path, %s) WHERE source_path LIKE %s",
+                 (len(prefix) + 1, like))
 
 
-def stored_hash(conn: psycopg.Connection, source_path: str) -> str | None:
-    row = conn.execute("SELECT content_hash FROM books WHERE source_path = %s", (source_path,)).fetchone()
+def library_key(path) -> str:
+    """How a book's file is recorded: relative to LIBRARY_PATH, so one database works
+    wherever the library is mounted (your Mac, a container's /library, a cloud bucket).
+    Files outside the library keep their absolute path."""
+    p = Path(path)
+    try:
+        return p.relative_to(settings.library_path).as_posix()
+    except ValueError:
+        return str(p)
+
+
+def library_file(source_path: str) -> Path:
+    """The file a stored source_path refers to, under the current LIBRARY_PATH."""
+    p = Path(source_path)
+    return p if p.is_absolute() else settings.library_path / p
+
+
+def stored_hash(conn: psycopg.Connection, path) -> str | None:
+    row = conn.execute("SELECT content_hash FROM books WHERE source_path = %s", (library_key(path),)).fetchone()
     return row["content_hash"] if row else None
+
+
+def find_moved_book(conn: psycopg.Connection, calibre_uuid: str | None, content_hash: str) -> dict | None:
+    """A book already in the database with this Calibre ID and identical content
+    (its file was moved or renamed, e.g. by editing the title in Calibre)."""
+    if not calibre_uuid:
+        return None
+    return conn.execute("SELECT id, source_path FROM books WHERE calibre_uuid = %s AND content_hash = %s",
+                        (calibre_uuid, content_hash)).fetchone()
+
+
+def update_source_path(conn: psycopg.Connection, book_id: int, path) -> None:
+    conn.execute("UPDATE books SET source_path = %s WHERE id = %s", (library_key(path), book_id))
 
 
 def save_extracted_book(conn: psycopg.Connection, book: ExtractedBook) -> int:
@@ -55,12 +91,12 @@ def save_extracted_book(conn: psycopg.Connection, book: ExtractedBook) -> int:
     """
     m = book.meta
     values = (m.calibre_uuid, m.calibre_id, m.title, m.authors, m.series, m.series_index,
-              m.language, str(book.path), book.content_hash, book.token_count, len(book.chapters))
+              m.language, library_key(book.path), book.content_hash, book.token_count, len(book.chapters))
     with conn.transaction():
         existing = conn.execute(
             "SELECT id FROM books WHERE source_path = %s OR (calibre_uuid IS NOT NULL AND calibre_uuid = %s) "
             "ORDER BY id LIMIT 1",
-            (str(book.path), m.calibre_uuid),
+            (library_key(book.path), m.calibre_uuid),
         ).fetchone()
         if existing:
             book_id = existing["id"]
@@ -202,12 +238,22 @@ def delete_summaries(conn: psycopg.Connection, book_id: int) -> None:
 
 
 def log_api_call(conn, book_id: int | None, purpose: str, model: str, effort: str, prompt_version: str,
-                 input_tokens: int, output_tokens: int) -> None:
+                 input_tokens: int, output_tokens: int, cost_usd: float | None = None,
+                 cache_read_tokens: int = 0, cache_write_tokens: int = 0) -> None:
     conn.execute(
-        """INSERT INTO api_calls (book_id, purpose, model, effort, prompt_version, input_tokens, output_tokens)
-           VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-        (book_id, purpose, model, effort, prompt_version, input_tokens, output_tokens),
+        """INSERT INTO api_calls (book_id, purpose, model, effort, prompt_version, input_tokens, output_tokens,
+                                  cost_usd, cache_read_tokens, cache_write_tokens)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+        (book_id, purpose, model, effort, prompt_version, input_tokens, output_tokens,
+         cost_usd, cache_read_tokens, cache_write_tokens),
     )
+
+
+def spend_since(conn, since) -> float:
+    """USD logged in api_calls since `since` (summaries, condenses, and agent calls)."""
+    row = conn.execute("SELECT coalesce(sum(cost_usd), 0) AS usd FROM api_calls WHERE created_at >= %s",
+                       (since,)).fetchone()
+    return float(row["usd"])
 
 
 def api_call_stats(conn, model: str, effort: str, prompt_version: str, recent: int = 200) -> dict[str, dict]:
@@ -286,12 +332,12 @@ def search_chunks(conn: psycopg.Connection, query_vec, model: str, levels: list[
         ).fetchall()
 
 
-def has_paid_work(conn: psycopg.Connection, source_path: str) -> bool:
+def has_paid_work(conn: psycopg.Connection, path) -> bool:
     """True if the book has summaries or embeddings (which re-extraction would delete)."""
     return conn.execute(
         """SELECT 1 FROM chunks c JOIN books b ON b.id = c.book_id
            WHERE b.source_path = %s AND (c.level <> 'passage' OR c.embedding IS NOT NULL) LIMIT 1""",
-        (source_path,),
+        (library_key(path),),
     ).fetchone() is not None
 
 
@@ -327,3 +373,52 @@ def searchable_books(conn: psycopg.Connection, model: str) -> list[dict]:
            WHERE c.embedding_model = %s ORDER BY b.id""",
         (model,),
     ).fetchall()
+
+
+
+# --------------------------------------------------------------------------- #
+# HTTP API: conversations and jobs
+# --------------------------------------------------------------------------- #
+
+def create_conversation(conn: psycopg.Connection, title: str) -> str:
+    row = conn.execute("INSERT INTO conversations (title) VALUES (%s) RETURNING id", (title[:200],)).fetchone()
+    return str(row["id"])
+
+
+def get_conversation(conn: psycopg.Connection, conversation_id: str) -> dict | None:
+    try:
+        return conn.execute("SELECT * FROM conversations WHERE id = %s", (conversation_id,)).fetchone()
+    except psycopg.errors.InvalidTextRepresentation:  # not a uuid
+        return None
+
+
+def save_conversation_messages(conn: psycopg.Connection, conversation_id: str, messages: list[dict]) -> None:
+    conn.execute("UPDATE conversations SET messages = %s, updated_at = now() WHERE id = %s",
+                 (Jsonb(messages), conversation_id))
+
+
+class JobAlreadyRunning(Exception):
+    pass
+
+
+def create_job(conn: psycopg.Connection, book_id: int, estimate: dict, max_cost_usd: float) -> int:
+    try:
+        row = conn.execute(
+            "INSERT INTO jobs (book_id, estimate, max_cost_usd) VALUES (%s, %s, %s) RETURNING id",
+            (book_id, Jsonb(estimate), max_cost_usd),
+        ).fetchone()
+    except psycopg.errors.UniqueViolation as e:
+        raise JobAlreadyRunning(f"book {book_id} already has an indexing job in progress") from e
+    return row["id"]
+
+
+def update_job(conn: psycopg.Connection, job_id: int, **fields) -> None:
+    allowed = {"status", "progress", "error", "cost_usd"}
+    if not fields or not set(fields) <= allowed:
+        raise ValueError(f"can only update {sorted(allowed)}")
+    assignments = ", ".join(f"{k} = %s" for k in fields)
+    conn.execute(f"UPDATE jobs SET {assignments}, updated_at = now() WHERE id = %s", (*fields.values(), job_id))
+
+
+def get_job(conn: psycopg.Connection, job_id: int) -> dict | None:
+    return conn.execute("SELECT * FROM jobs WHERE id = %s", (job_id,)).fetchone()

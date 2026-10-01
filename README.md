@@ -41,7 +41,7 @@ flowchart TB
 
     PG[("Postgres + pgvector<br/>books · chapters · chunks · HNSW cosine index")]
 
-    subgraph ASK["Asking · REPL"]
+    subgraph ASK["Asking · terminal REPL, phone web page, or HTTP API"]
         direction LR
         USER(["You"]) <--> AGENT["Agent<br/>hand-written tool loop"]
         AGENT <--> OPUS{{"Claude Opus 5.5"}}
@@ -168,6 +168,41 @@ Books can be named by id or by words from the title or author. [SHORTCUTS.md](SH
 lists every command, including debugging tools (`--dry-run -v`, raw vector `search`) and direct
 database access.
 
+## HTTP API and web page
+
+```sh
+docker compose up -d --build      # Postgres + the API on http://localhost:8080
+```
+
+- **Web page:** open `http://localhost:8080` (or your computer's address from a phone on the same
+  network). It asks questions with the answer streaming in, shows tool calls and reasoning as they
+  happen, browses the library, and indexes a book after confirming its estimated cost.
+- **API reference:** interactive docs at `/docs`. The same API is how other projects use this as a
+  service.
+
+| Endpoint | What it does |
+|---|---|
+| `POST /ask` | ask the agent; `conversation_id` continues a conversation; `stream: true` for Server-Sent Events |
+| `POST /search` | raw vector search over passages and summaries (no LLM): for callers that bring their own model |
+| `GET /books`, `GET /books/{id}`, `GET /books/{id}/summary`, `…/chapters/{n}/summary` | the library and its summaries |
+| `POST /library/scan` | extract new or changed EPUBs (free); never discards paid work |
+| `GET /books/{id}/estimate`, `POST /books/{id}/index` | cost estimate, then an indexing job that refuses to start above `max_cost_usd` |
+| `GET /jobs/{id}`, `GET /conversations[/{id}]` | job progress and actual cost; conversation history |
+
+```sh
+curl -X POST localhost:8080/ask -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+     -d '{"question": "What are the themes of Witchcraft for Wayward Girls?"}'
+```
+
+**Controls:**
+- **API keys:** every endpoint except `/health` needs a key from `API_KEYS`. Keys are
+  comma-separated, so each client can have its own and lose it independently, and the server
+  won't start without at least one.
+- **Daily budget:** `DAILY_BUDGET_USD` caps total daily spend. Every model call (agent and
+  summaries) is logged with its cost, and spending endpoints return 429 once the cap is reached.
+- **Stateless:** conversations and indexing jobs live in Postgres, so the API can run as several
+  instances, which is how it's built to deploy to Cloud Run.
+
 ## Testing
 
 ```sh
@@ -219,6 +254,9 @@ Writing these tests found real bugs, now fixed and covered by regression tests:
 | [`db.py`](db.py), [`schema.sql`](schema.sql) | Postgres access and schema (`books`, `chapters`, `chunks`, `api_calls`) |
 | [`index.py`](index.py) | indexing CLI: `extract`, `status`, `book`, `summaries`, `search`, `backup` |
 | [`backup.py`](backup.py) | dated `pg_dump` archives, verified with `pg_restore --list`, with pruning |
+| [`api.py`](api.py), [`static/index.html`](static/index.html) | HTTP API (FastAPI) and the phone-friendly web page |
+| [`jobs.py`](jobs.py), [`stage.py`](stage.py) | estimate + index one book (shared by CLI, API, and future cloud jobs); library scan |
+| [`Dockerfile`](Dockerfile), [`docker-compose.yml`](docker-compose.yml) | the API image (non-root, `$PORT`-aware) and the local stack |
 | [`config.py`](config.py), [`tokens.py`](tokens.py) | settings from `.env`; local token estimate |
 | [`tests/`](tests) | pytest suite: synthetic-EPUB fixtures, fake Anthropic client |
 
@@ -227,12 +265,16 @@ Writing these tests found real bugs, now fixed and covered by regression tests:
 - **Full-book loading** uses a flat 150K-token limit, so most novels go through summaries and
   search instead. The next step is a limit based on how much room is left in the session
   ([TODO.md](TODO.md)).
-- **Library changes:** renaming a book in Calibre, or letting Calibre rewrite the EPUB, currently
-  looks like a new book, which redoes paid work. Change detection should key on Calibre's book ID
-  and content hash, and ask before discarding summaries.
+- **Changed EPUBs:** a renamed or moved book is recognized by its Calibre ID and content, and keeps
+  its summaries. But if Calibre rewrites the EPUB itself (e.g. "embed metadata"), its content hash
+  changes. That book is then reported rather than re-extracted, and re-extracting it (`extract
+  --force`) means paying for summaries again, even if the text barely changed.
 - **Local token estimates** (characters ÷ 3.8) are used only for chunk sizing and dry runs. Real
   counts come from the API.
-- **Single-user and local** by design: no web server, no auth.
+- **Single-user:** API keys protect the service, but there are no user accounts; everyone with a
+  key sees the same library and conversations.
+- **Not deployed yet:** the API is built for Cloud Run + Cloud SQL, with Cloudflare Access in front
+  of the web page. That deployment is the next phase ([TODO.md](TODO.md)).
 
 ## How this was built
 

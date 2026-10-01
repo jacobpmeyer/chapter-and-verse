@@ -321,6 +321,11 @@ def _content_skip_reason(md: str, soup: BeautifulSoup, language: str | None) -> 
 # Main entry
 # --------------------------------------------------------------------------- #
 
+def read_meta(path: Path) -> BookMeta:
+    """Just the metadata (cheap when a Calibre .opf is present)."""
+    return _calibre_opf_meta(path) or _epub_meta(epub.read_epub(str(path), {"ignore_ncx": False}), path)
+
+
 def extract_book(path: Path, content_hash: str | None = None) -> ExtractedBook:
     book = epub.read_epub(str(path), {"ignore_ncx": False})
     meta = _calibre_opf_meta(path) or _epub_meta(book, path)

@@ -24,6 +24,7 @@ import anthropic
 
 import db
 from config import FALLBACK_MODELS, PRICES, settings
+from stage import Progress, StageResult, report
 from tokens import estimate_tokens
 
 # Bump when the prompts change in a way that changes output length, so the
@@ -192,8 +193,10 @@ def call_model(client: anthropic.Anthropic, user: str, max_tokens: int, ctx: Cal
     input_tokens = (u.input_tokens or 0) + (getattr(u, "cache_read_input_tokens", 0) or 0) \
         + (getattr(u, "cache_creation_input_tokens", 0) or 0)
     ctx.usage.add(input_tokens, u.output_tokens or 0)
+    pin, pout = PRICES.get(settings.summary_model, (0.0, 0.0))
     db.log_api_call(ctx.conn, ctx.book_id, purpose, settings.summary_model, settings.summary_effort,
-                    PROMPT_VERSION, input_tokens, u.output_tokens or 0)
+                    PROMPT_VERSION, input_tokens, u.output_tokens or 0,
+                    cost_usd=(input_tokens * pin + (u.output_tokens or 0) * pout) / 1e6)
     if msg.stop_reason == "refusal":
         details = getattr(msg, "stop_details", None)
         raise SummaryError(f"model declined (category: {getattr(details, 'category', None)})")
@@ -391,7 +394,7 @@ def print_estimate(conn, plans: list[BookPlan]) -> float:
 # Execution
 # --------------------------------------------------------------------------- #
 
-def summarize_book(client: anthropic.Anthropic, p: BookPlan, usage: Usage) -> str:
+def summarize_book(client: anthropic.Anthropic, p: BookPlan, usage: Usage, progress: Progress | None = None) -> str:
     conn = db.connect()  # one connection per worker thread
     title = p.book["title"][:40]
     book_id = p.book["id"]
@@ -407,7 +410,7 @@ def summarize_book(client: anthropic.Anthropic, p: BookPlan, usage: Usage) -> st
             text = enforce_length(client, text, CHAPTER_WORDS[1], ctx, f"chapter {c['chapter_index']}")
             db.save_chapter_summary(conn, book_id, c["chapter_index"], c["title"], text, estimate_tokens(text), model)
             summaries[c["chapter_index"]] = text
-            print(f"  {title}: chapter {c['chapter_index']}/{len(p.chapters)} done", flush=True)
+            report(progress, f"  {title}: chapter {c['chapter_index']}/{len(p.chapters)} summarized")
 
         if p.needs_book_summary:
             if p.method == "full_text":
@@ -418,7 +421,7 @@ def summarize_book(client: anthropic.Anthropic, p: BookPlan, usage: Usage) -> st
             (_lo, hi), _scale = book_words(p.exact_tokens)
             text = enforce_length(client, text, hi, ctx, "book summary")
             db.save_book_summary(conn, book_id, text, estimate_tokens(text), model, p.method)
-            print(f"  {title}: book summary done ({p.method}, {word_count(text)} words)", flush=True)
+            report(progress, f"  {title}: book summary done ({p.method}, {word_count(text)} words)")
         return f"{title}: ok"
     except (SummaryError, anthropic.APIError) as e:
         # Progress so far is saved; a re-run resumes from the first missing chapter.
@@ -433,17 +436,17 @@ def estimate(conn, client: anthropic.Anthropic, book_ids: list[int] | None) -> t
     return plans, (print_estimate(conn, plans) if plans else 0.0)
 
 
-def execute(client: anthropic.Anthropic, plans: list[BookPlan]) -> bool:
-    """Run the planned summaries. Returns True if every book finished."""
+def execute(client: anthropic.Anthropic, plans: list[BookPlan], progress: Progress | None = None) -> StageResult:
+    """Run the planned summaries. The result is truthy if every book finished."""
     usage = Usage()
     with ThreadPoolExecutor(max_workers=min(4, len(plans))) as pool:
-        results = list(pool.map(lambda p: summarize_book(client, p, usage), plans))
+        results = list(pool.map(lambda p: summarize_book(client, p, usage, progress), plans))
     print("\n" + "\n".join(results))
     estimated = sum(p.est_cost for p in plans)
     actual = usage.cost(settings.summary_model)
     print(f"Actual usage: {usage.calls} calls, {usage.input_tokens:,} input / {usage.output_tokens:,} output tokens "
           f"≈ ${actual:.2f} (estimated ${estimated:.2f}, {(actual - estimated) / estimated:+.0%})")
-    return all(r.endswith(": ok") for r in results)
+    return StageResult(all(r.endswith(": ok") for r in results), actual)
 
 
 def confirm(yes: bool) -> bool:

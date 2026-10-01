@@ -55,9 +55,10 @@ def max_turns(monkeypatch):
 
 def test_answer_without_tools(capsys):
     agent, api, _ = make_agent([msg("end_turn", thinking(), text("Forty-two."))])
-    agent.ask("What is the answer?")
+    result = agent.ask("What is the answer?", on_event=A.TerminalRenderer())
+    assert (result.answer, result.stop, result.tool_calls) == ("Forty-two.", "end_turn", [])
     assert [m["role"] for m in agent.messages] == ["user", "assistant"]
-    assert "Forty-two." in capsys.readouterr().out
+    assert "Forty-two." in capsys.readouterr().out  # the terminal renderer prints the answer
     assert len(api.requests) == 1
 
 
@@ -83,7 +84,9 @@ def test_replies_are_kept_exactly_as_returned():
     reply = msg("tool_use", thinking("signed reasoning"), tool("t1", "list_books"))
     agent, _, _ = make_agent([reply, msg("end_turn", text("ok"))])
     agent.ask("q")
-    assert agent.messages[1]["content"] is reply.content  # thinking blocks untouched
+    stored = agent.messages[1]["content"]
+    assert stored == [A.to_param(b) for b in reply.content]  # every block, thinking included
+    assert stored[0] == {"type": "thinking", "thinking": "signed reasoning"}
 
 
 def test_history_is_append_only_across_calls_and_questions():
@@ -129,14 +132,15 @@ def test_running_out_of_steps_is_reported(max_turns, capsys):
     # The model shouldn't ask for tools when they're off, but if a reply still
     # isn't final the loop must stop rather than call again.
     agent, api, _ = make_agent([msg("pause_turn", text("partial"))])
-    agent.ask("q")
+    result = agent.ask("q", on_event=A.TerminalRenderer())
     assert len(api.requests) == 1
+    assert result.stop == "step_limit"
     assert "Stopped after 1 steps" in capsys.readouterr().out
 
 
 def test_max_tokens_closes_out_unfinished_tool_calls(capsys):
     agent, _, tools = make_agent([msg("max_tokens", text("Let me look"), tool("t1", "search_passages", query="x"))])
-    agent.ask("q")
+    assert agent.ask("q", on_event=A.TerminalRenderer()).stop == "cut_off"
     assert tools.calls == []  # a cut-off tool call is never run
     closing = agent.messages[-1]
     assert closing["role"] == "user"
@@ -147,7 +151,7 @@ def test_max_tokens_closes_out_unfinished_tool_calls(capsys):
 def test_refusal_removes_only_that_question(capsys):
     agent, _, _ = make_agent([msg("end_turn", text("Fine.")), msg("refusal", category="cyber")])
     agent.ask("first")
-    agent.ask("second")
+    assert agent.ask("second", on_event=A.TerminalRenderer()).stop == "declined"
     assert [m["role"] for m in agent.messages] == ["user", "assistant"]
     assert agent.messages[0]["content"] == "first"
     assert "declined" in capsys.readouterr().out
@@ -166,7 +170,7 @@ def test_pause_turn_resumes():
     agent, api, _ = make_agent([msg("pause_turn", text("thinking...")), msg("end_turn", text("done"))])
     agent.ask("q")
     assert len(api.requests) == 2
-    assert agent.messages[-1]["content"][0].text == "done"
+    assert agent.messages[-1]["content"][0]["text"] == "done"
 
 
 def test_request_shape():
@@ -179,6 +183,48 @@ def test_request_shape():
     assert req["cache_control"] == {"type": "ephemeral"}
     assert req["thinking"]["type"] == "adaptive"
     assert req["output_config"] == {"effort": A.settings.agent_effort}
+
+
+def test_events_describe_the_work_in_order():
+    agent, _, _ = make_agent([msg("tool_use", thinking("plan"), tool("t1", "list_books", query="x")),
+                              msg("end_turn", text("Answer."))])
+    events = []
+    result = agent.ask("q", on_event=events.append)
+    kinds = [e["type"] for e in events]
+    assert kinds == ["block_start", "thinking", "block_end", "block_start", "block_end",  # first reply
+                     "tool_call", "tool_result",
+                     "block_start", "text", "block_end",  # second reply
+                     "done"]
+    assert events[5] == {"type": "tool_call", "id": "t1", "name": "list_books", "input": {"query": "x"}}
+    assert events[6]["summary"] == "list_books ok" and events[6]["is_error"] is False
+    assert events[-1]["answer"] == "Answer." and events[-1]["usage"]["calls"] == 2
+    assert result.tool_calls == [{"name": "list_books", "input": {"query": "x"}, "summary": "list_books ok",
+                                  "is_error": False}]
+
+
+def test_usage_is_reported_after_every_model_call():
+    seen = []
+    client = FakeClient([msg("tool_use", tool("t1", "list_books")), msg("end_turn", text("ok"))])
+    agent = A.Agent(client=client, tools=FakeTools(), on_usage=lambda u, cost: seen.append(cost))
+    result = agent.ask("q")
+    assert len(seen) == 2 and all(c > 0 for c in seen)
+    assert result.usage.cost() == pytest.approx(sum(seen))
+
+
+def test_stored_history_round_trips_through_json():
+    import json
+
+    agent, _, _ = make_agent([msg("tool_use", thinking("sig"), tool("t1", "list_books")), msg("end_turn", text("one"))])
+    agent.ask("first")
+    stored = json.loads(json.dumps(agent.messages))  # what the API saves and reloads
+    assert stored == agent.messages
+
+    client = FakeClient([msg("end_turn", text("two"))])
+    resumed = A.Agent(client=client, tools=FakeTools(), messages=stored)
+    resumed.ask("second")
+    sent = client.messages.requests[0]["messages"]
+    assert sent[:4] == agent.messages  # earlier turns go back exactly as stored
+    assert sent[4] == {"role": "user", "content": "second"}
 
 
 def test_session_usage_counts_cache_at_discounted_rates():
