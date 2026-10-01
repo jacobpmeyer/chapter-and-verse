@@ -7,6 +7,7 @@
     python index.py summarize (--book-id ID ... | --all) [--dry-run] [--yes]
     python index.py embed (--book-id ID ... | --all) [--dry-run] [--yes]
     python index.py search "query" [--book-id ID] [--level passage|chapter_summary|book_summary] [-k 8]
+    python index.py backup [--label NAME] [--keep N] [--list]   # dated pg_dump to ~/Backups/chapter-and-verse
 """
 
 from __future__ import annotations
@@ -339,6 +340,27 @@ def cmd_search(args: argparse.Namespace) -> None:
         print(f"{h['similarity']:.3f}  [{h['level']}] {h['book_title'][:30]}, {where}\n       {snippet}…")
 
 
+def cmd_backup(args: argparse.Namespace) -> None:
+    import backup
+
+    directory = backup.backup_dir()
+    if args.list:
+        existing = backup.list_backups(directory)
+        for p in existing:
+            print(f"  {p.name}  ({p.stat().st_size / 1e6:.1f} MB)")
+        print(f"{len(existing)} backup(s) in {directory}")
+        return
+    try:
+        path = backup.create_backup(args.label)
+    except backup.BackupError as e:
+        sys.exit(f"Backup failed: {e}")
+    print(f"Backed up to {path} ({path.stat().st_size / 1e6:.1f} MB, verified)")
+    if args.keep:
+        for old in backup.prune(directory, args.keep):
+            print(f"  removed old backup {old.name}")
+    print(f"Restore with (replaces the current database contents):\n  {backup.restore_command(path)}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Index an EPUB library")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -393,6 +415,12 @@ def main() -> None:
     p.add_argument("--level", choices=["passage", "chapter_summary", "book_summary"])
     p.add_argument("-k", type=int, default=8)
     p.set_defaults(func=cmd_search)
+
+    p = sub.add_parser("backup", help="dated, verified pg_dump of the database (outside the project)")
+    p.add_argument("--label", help='added to the file name, e.g. "before-redo"')
+    p.add_argument("--keep", type=int, metavar="N", help="then delete all but the newest N backups")
+    p.add_argument("--list", action="store_true", help="list existing backups instead of making one")
+    p.set_defaults(func=cmd_backup)
 
     args = parser.parse_args()
     args.func(args)

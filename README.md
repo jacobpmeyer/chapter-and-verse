@@ -161,6 +161,9 @@ python index.py summaries wayward # read the generated summaries
 python agent.py                   # ask questions (/usage, /reset, /quit)
 ```
 
+`python index.py backup` writes a dated, verified database dump outside the project. Run it
+before anything that rebuilds paid work, like `--redo-summaries`.
+
 Books can be named by id or by words from the title or author. [SHORTCUTS.md](SHORTCUTS.md)
 lists every command, including debugging tools (`--dry-run -v`, raw vector `search`) and direct
 database access.
@@ -201,7 +204,8 @@ Writing these tests found real bugs, now fixed and covered by regression tests:
 | [`agent.py`](agent.py) | REPL and the hand-written tool loop |
 | [`tools.py`](tools.py) | tool schemas the model sees, and the code that runs them |
 | [`db.py`](db.py), [`schema.sql`](schema.sql) | Postgres access and schema (`books`, `chapters`, `chunks`, `api_calls`) |
-| [`index.py`](index.py) | indexing CLI: `extract`, `status`, `book`, `summaries`, `search`, … |
+| [`index.py`](index.py) | indexing CLI: `extract`, `status`, `book`, `summaries`, `search`, `backup` |
+| [`backup.py`](backup.py) | dated `pg_dump` archives, verified with `pg_restore --list`, with pruning |
 | [`config.py`](config.py), [`tokens.py`](tokens.py) | settings from `.env`; local token estimate |
 | [`tests/`](tests) | pytest suite: synthetic-EPUB fixtures, fake Anthropic client |
 

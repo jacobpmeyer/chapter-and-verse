@@ -48,6 +48,25 @@ python index.py book 9 --redo-summaries  # throw away a book's summaries and reg
 `summarize` and `embed` also exist on their own, but need `--book-id ID` or `--all`
 so nothing runs on the whole library by accident. `book` is usually what you want.
 
+## Backups
+
+```sh
+python index.py backup                       # dated, verified dump to ~/Backups/chapter-and-verse
+python index.py backup --label before-redo   # label it (do this before --redo-summaries or extract --force)
+python index.py backup --keep 10             # then delete all but the newest 10
+python index.py backup --list                # what's there
+```
+
+Restoring replaces the current database contents. The backup command prints the exact command:
+
+```sh
+docker compose exec -T db pg_restore -U library_rag -d library_rag --clean --if-exists \
+  --single-transaction < ~/Backups/chapter-and-verse/<file>.dump
+```
+
+The database lives in the Docker volume `chapter-and-verse_pgdata`. `docker compose down -v`,
+`docker system prune --volumes`, or a Docker Desktop factory reset deletes it, so back up first.
+
 ## Searching (debugging retrieval, no LLM)
 
 ```sh
