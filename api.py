@@ -7,6 +7,10 @@ with a key from API_KEYS. Spending endpoints (/ask, indexing) are capped by
 DAILY_BUDGET_USD, and indexing additionally needs an explicit max_cost_usd that
 covers the estimate: the API's version of the CLI's y/N.
 
+When deployed behind Cloudflare Access (CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD
+set), every request except /health must also carry a valid Access JWT, so the
+service's own URL can't be used to go around the login.
+
 The process is stateless (conversations and jobs live in Postgres), so it can
 run as several instances, e.g. on Cloud Run. Interactive docs: /docs.
 """
@@ -25,9 +29,11 @@ from pathlib import Path
 from typing import Literal
 
 import anthropic
+import jwt
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pgvector import Vector
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
@@ -42,6 +48,7 @@ from tools import MAX_K, ToolRunner
 
 log = logging.getLogger("chapter_and_verse.api")
 STATIC_DIR = Path(__file__).parent / "static"
+KEEPALIVE_SECONDS = 15  # idle time before a streamed answer sends a keep-alive comment
 
 
 # --------------------------------------------------------------------------- #
@@ -63,7 +70,7 @@ class Database:
 
             with self._lock:
                 if self._pool is None:
-                    self._pool = ConnectionPool(self.url, min_size=1, max_size=10, open=True,
+                    self._pool = ConnectionPool(self.url, min_size=1, max_size=settings.db_pool_max, open=True,
                                                 kwargs={"row_factory": dict_row, "autocommit": True},
                                                 configure=register_vector)
         with self._pool.connection() as conn:
@@ -100,9 +107,41 @@ def check_auth_config() -> None:
         raise RuntimeError("Set API_KEYS (comma-separated) or, for local development only, AUTH_DISABLED=1")
 
 
+class AccessVerifier:
+    """Checks the JWT that Cloudflare Access adds to every request it lets through
+    (the Cf-Access-Jwt-Assertion header), for a person who logged in or a service
+    token. Signed RS256 with the team's rotating keys; `aud` must be this
+    application's tag and `iss` the team domain."""
+
+    def __init__(self, team_domain: str, audience: str, jwks_client=None):
+        team_domain = team_domain.removeprefix("https://").rstrip("/")
+        self.issuer = f"https://{team_domain}"
+        self.audience = audience
+        # Keys are fetched once and cached; an unknown key id triggers a refetch (rotation).
+        self.jwks = jwks_client or jwt.PyJWKClient(f"{self.issuer}/cdn-cgi/access/certs", cache_keys=True,
+                                                   lifespan=3600, timeout=5)
+
+    def verify(self, token: str) -> dict:
+        key = self.jwks.get_signing_key_from_jwt(token)
+        return jwt.decode(token, key.key, algorithms=["RS256"], audience=self.audience, issuer=self.issuer,
+                          options={"require": ["exp", "iat", "aud", "iss"]})
+
+
+def access_verifier() -> AccessVerifier | None:
+    """The Access check, if configured. Half a configuration is an error, not "off"."""
+    domain, aud = settings.cf_access_team_domain, settings.cf_access_aud
+    if bool(domain) != bool(aud):
+        raise RuntimeError("Set both CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD (or neither, when not behind Access)")
+    return AccessVerifier(domain, aud) if domain else None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     check_auth_config()
+    app.state.access = access_verifier()
+    jobs.get_runner()  # a misconfigured JOB_RUNNER fails at startup, not at the first indexing request
+    log.info("Cloudflare Access check: %s; job runner: %s",
+             "on" if app.state.access else "off", settings.job_runner)
     with app.state.services.database.connection() as conn:
         db.ensure_schema(conn)
     yield
@@ -113,11 +152,32 @@ app = FastAPI(title="Chapter and Verse", version="1.0",
               description="Ask questions about your ebook library; answers cite the book and chapter.",
               lifespan=lifespan)
 app.state.services = Services()
+app.state.access = None  # set at startup from CF_ACCESS_*; None = not behind Cloudflare Access
 if settings.cors_origins:
     app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_origins),
                        allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"])
 
 
+@app.middleware("http")
+async def cloudflare_access(request: Request, call_next):
+    """Behind Cloudflare Access, reject anything that didn't come through it. /health is
+    exempt: Cloud Run's probes reach the container directly. API keys are still checked
+    afterwards, per endpoint."""
+    verifier = request.app.state.access
+    if verifier is None or request.url.path == "/health":
+        return await call_next(request)
+    token = request.headers.get("cf-access-jwt-assertion")
+    if not token:
+        return JSONResponse({"detail": "missing Cloudflare Access token"}, status.HTTP_403_FORBIDDEN)
+    try:
+        await run_in_threadpool(verifier.verify, token)  # may fetch keys over the network
+    except jwt.PyJWTError as e:
+        log.warning("rejected Cloudflare Access token: %s", type(e).__name__)
+        return JSONResponse({"detail": "invalid Cloudflare Access token"}, status.HTTP_403_FORBIDDEN)
+    return await call_next(request)
+
+
+# Registered last, so it's the outermost middleware and also logs requests rejected above.
 @app.middleware("http")
 async def access_log(request: Request, call_next):
     start = time.perf_counter()
@@ -337,7 +397,16 @@ def ask(req: AskRequest, svc: Services = Depends(services)):
 
     def sse():
         yield f"event: conversation\ndata: {json.dumps({'conversation_id': conversation_id})}\n\n"
-        while (event := events.get()) is not done:
+        while True:
+            try:
+                event = events.get(timeout=KEEPALIVE_SECONDS)
+            except queue.Empty:
+                # An SSE comment: clients ignore it, but proxies (Cloudflare) see a live
+                # connection while the model thinks for a long time between events.
+                yield ": keepalive\n\n"
+                continue
+            if event is done:
+                break
             yield f"event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(sse(), media_type="text/event-stream",
@@ -406,7 +475,12 @@ def index_book(book_id: int, req: IndexRequest, svc: Services = Depends(services
             job_id = db.create_job(conn, book_id, est.as_dict(), req.max_cost_usd)
         except db.JobAlreadyRunning as e:
             raise HTTPException(status.HTTP_409_CONFLICT, str(e))
-    jobs.get_runner().start(job_id)
+        try:
+            jobs.get_runner().start(job_id)
+        except jobs.JobStartError as e:
+            # Don't leave it queued forever (it would also block new jobs for this book).
+            db.update_job(conn, job_id, status="failed", error=str(e)[:1000])
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"job {job_id} couldn't be started: {e}")
     return {"job_id": job_id, "estimate": est.as_dict()}
 
 

@@ -1,16 +1,20 @@
-"""Indexing one book, shared by the CLI (`index.py book`), the HTTP API, and,
-later, a Cloud Run Job.
+"""Indexing one book, shared by the CLI (`index.py book`), the HTTP API, and a
+Cloud Run Job (`index.py run-job`).
 
 - estimate_book(): what finishing a book would cost (free: count_tokens only)
 - index_book():    summaries, then embeddings, with progress reporting
 - scan_library():  extract new or changed EPUBs (free), never discarding paid work
 - run_job():       execute a stored job, recording status, progress and cost
-- get_runner():    where jobs run (a background thread now; Cloud Run Jobs later)
+- get_runner():    where jobs run (a background thread locally; a Cloud Run Job when deployed)
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import threading
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +26,8 @@ import summarize
 from config import settings
 from extract import extract_book, file_hash, find_epubs, read_meta
 from stage import Progress
+
+log = logging.getLogger("chapter_and_verse.jobs")
 
 
 # --------------------------------------------------------------------------- #
@@ -204,6 +210,59 @@ class InlineRunner:
         run_job(job_id, self.client)
 
 
+class JobStartError(RuntimeError):
+    """The job couldn't be handed to its runner; nothing ran and nothing was spent."""
+
+
+METADATA_TOKEN_URL = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+CLOUD_RUN_API = "https://run.googleapis.com/v2"
+
+
+class CloudRunJobRunner:
+    """Starts one Cloud Run Job execution per indexing job (deployed use).
+
+    A thread inside a Cloud Run request isn't reliable for multi-minute work: once
+    the response is sent, the instance's CPU is throttled and the instance can be
+    shut down. A job execution runs `python index.py run-job <id>` to completion on
+    its own. The call is two plain HTTP requests: an access token for the service's
+    identity from the metadata server, then the Cloud Run Admin API's `jobs:run`.
+    """
+
+    def __init__(self, job_name: str, urlopen=urllib.request.urlopen):
+        self.job_name = job_name  # projects/<project>/locations/<region>/jobs/<job>
+        self._urlopen = urlopen
+
+    def _token(self) -> str:
+        request = urllib.request.Request(METADATA_TOKEN_URL, headers={"Metadata-Flavor": "Google"})
+        with self._urlopen(request, timeout=5) as r:
+            return json.load(r)["access_token"]
+
+    def start(self, job_id: int) -> str:
+        """Returns the execution's name."""
+        body = {"overrides": {"containerOverrides": [{"args": ["index.py", "run-job", str(job_id)]}]}}
+        try:
+            request = urllib.request.Request(
+                f"{CLOUD_RUN_API}/{self.job_name}:run", data=json.dumps(body).encode(), method="POST",
+                headers={"Authorization": f"Bearer {self._token()}", "Content-Type": "application/json"})
+            with self._urlopen(request, timeout=30) as r:
+                operation = json.load(r)  # a long-running operation; its metadata is the execution
+        except urllib.error.HTTPError as e:
+            raise JobStartError(f"Cloud Run refused to start the job: HTTP {e.code} {_api_error(e)}") from e
+        except (urllib.error.URLError, OSError, ValueError, KeyError) as e:
+            raise JobStartError(f"couldn't reach Cloud Run to start the job: {type(e).__name__}: {e}") from e
+        execution = operation.get("metadata", {}).get("name", operation.get("name", "?"))
+        log.info("job %s started as Cloud Run execution %s", job_id, execution)
+        return execution
+
+
+def _api_error(e: urllib.error.HTTPError) -> str:
+    """The message from a Google API error body, e.g. which permission was denied."""
+    try:
+        return json.loads(e.read())["error"]["message"]
+    except Exception:
+        return e.reason or ""
+
+
 _runner_override = None
 
 
@@ -212,4 +271,8 @@ def get_runner():
         return _runner_override
     if settings.job_runner == "thread":
         return ThreadRunner()
-    raise NotImplementedError(f"JOB_RUNNER={settings.job_runner!r} isn't available yet (use 'thread')")
+    if settings.job_runner == "cloud_run":
+        if not settings.cloud_run_job:
+            raise RuntimeError("JOB_RUNNER=cloud_run needs CLOUD_RUN_JOB=projects/<project>/locations/<region>/jobs/<job>")
+        return CloudRunJobRunner(settings.cloud_run_job)
+    raise RuntimeError(f"unknown JOB_RUNNER={settings.job_runner!r} (use 'thread' or 'cloud_run')")

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import time
 from contextlib import contextmanager
 
 import anthropic
@@ -205,6 +206,19 @@ def test_ask_streams_server_sent_events(make_client, indexed_book):
     assert c.get(f"/conversations/{convo_id}", headers=AUTH).json()["turns"][0]["answer"] == "Two books."
 
 
+def test_streams_send_keepalives_while_the_agent_is_quiet(make_client, monkeypatch):
+    def slow_agent(svc, conversation_id, messages, question, on_event=None):
+        time.sleep(0.3)  # a long think before the first event
+        on_event({"type": "text", "text": "Late."})
+
+    monkeypatch.setattr(api, "KEEPALIVE_SECONDS", 0.05)
+    monkeypatch.setattr(api, "_run_agent", slow_agent)
+    with make_client().stream("POST", "/ask", headers=AUTH, json={"question": "q", "stream": True}) as r:
+        frames = [f for f in r.read().decode().split("\n\n") if f]
+    assert frames[0].startswith("event: conversation") and frames[-1].startswith("event: text")
+    assert set(frames[1:-1]) == {": keepalive"} and len(frames[1:-1]) >= 2
+
+
 def test_a_failed_question_is_not_saved(make_client, indexed_book):
     error = anthropic.APIConnectionError(request=httpx.Request("POST", "https://api.anthropic.com"))
     c = make_client([msg("tool_use", tool("t1", "list_books")), error])
@@ -257,6 +271,26 @@ def test_index_job_runs_to_completion(make_client, conn):
     assert db.get_book(conn, book_id)["stage"] == "embedded"
     again = c.post(f"/books/{book_id}/index", headers=AUTH, json={"max_cost_usd": 10}).json()
     assert again["job_id"] is None and "already fully indexed" in again["message"]
+
+
+class RefusingRunner:
+    def start(self, job_id):
+        raise jobs.JobStartError("Cloud Run refused to start the job: HTTP 403 Permission denied")
+
+
+def test_a_job_that_cannot_start_is_marked_failed(make_client, conn, monkeypatch):
+    book_id = db.save_extracted_book(conn, make_book(chapters=2))
+    c = make_client(summaries_script(2))
+    with monkeypatch.context() as m:
+        m.setattr(jobs, "_runner_override", RefusingRunner())
+        r = c.post(f"/books/{book_id}/index", headers=AUTH, json={"max_cost_usd": 10})
+    assert r.status_code == 502 and "HTTP 403 Permission denied" in r.json()["detail"]
+    job = c.get("/jobs/1", headers=AUTH).json()
+    assert (job["status"], job["cost_usd"]) == ("failed", None) and "HTTP 403" in job["error"]
+    assert db.get_book(conn, book_id)["stage"] == "extracted"  # nothing ran
+    # The failed job doesn't block the book: the next attempt runs.
+    retry = c.post(f"/books/{book_id}/index", headers=AUTH, json={"max_cost_usd": 10}).json()
+    assert c.get(f"/jobs/{retry['job_id']}", headers=AUTH).json()["status"] == "done"
 
 
 def test_only_one_active_job_per_book(make_client, conn):

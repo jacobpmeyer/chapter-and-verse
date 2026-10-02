@@ -8,6 +8,7 @@
     python index.py embed (--book-id ID ... | --all) [--dry-run] [--yes]
     python index.py search "query" [--book-id ID] [--level passage|chapter_summary|book_summary] [-k 8]
     python index.py backup [--label NAME] [--keep N] [--list]   # dated pg_dump to ~/Backups/chapter-and-verse
+    python index.py run-job <job_id>     # run an indexing job queued by the API (what a Cloud Run Job executes)
 """
 
 from __future__ import annotations
@@ -366,6 +367,34 @@ def cmd_backup(args: argparse.Namespace) -> None:
     print(f"Restore with (replaces the current database contents):\n  {backup.restore_command(path)}")
 
 
+def cmd_run_job(args: argparse.Namespace) -> None:
+    """Run one job queued by the API. The API already confirmed the estimate against the
+    job's max_cost_usd, and run_job re-checks it. Exits non-zero unless the job finished,
+    so a Cloud Run execution's status matches the job's."""
+    import db
+    import jobs
+
+    conn = db.connect()
+    try:
+        job = db.get_job(conn, args.job_id)
+        if job is None:
+            sys.exit(f"No job {args.job_id}.")
+        if job["status"] != "queued":  # e.g. an execution started twice: never run (and pay for) a job again
+            sys.exit(f"Job {args.job_id} is {job['status']}, not queued; start a new one through the API.")
+        print(f"Running job {args.job_id}", flush=True)
+        try:
+            jobs.run_job(args.job_id)
+        except Exception as e:  # already recorded on the job by run_job
+            sys.exit(f"Job {args.job_id} failed: {type(e).__name__}: {e}")
+        job = db.get_job(conn, args.job_id)
+    finally:
+        conn.close()
+    cost = f"${float(job['cost_usd']):.2f}" if job["cost_usd"] is not None else "n/a"
+    print(f"Job {args.job_id}: {job['status']}, cost {cost}" + (f", {job['error']}" if job["error"] else ""))
+    if job["status"] != "done":
+        sys.exit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Index an EPUB library")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -427,6 +456,10 @@ def main() -> None:
     p.add_argument("--keep", type=int, metavar="N", help="then delete all but the newest N backups")
     p.add_argument("--list", action="store_true", help="list existing backups instead of making one")
     p.set_defaults(func=cmd_backup)
+
+    p = sub.add_parser("run-job", help="run an indexing job queued by the API (what a Cloud Run Job executes)")
+    p.add_argument("job_id", type=int)
+    p.set_defaults(func=cmd_run_job)
 
     args = parser.parse_args()
     args.func(args)

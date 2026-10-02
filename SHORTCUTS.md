@@ -42,6 +42,11 @@ curl -X POST localhost:8080/ask -H "Authorization: Bearer $KEY" -H "Content-Type
 curl -H "Authorization: Bearer $KEY" localhost:8080/books/7/estimate      # free
 ```
 
+Indexing started through the API runs as a job: in a background thread locally, or as a Cloud
+Run Job execution when deployed. Either way, `GET /jobs/<id>` shows progress and the actual cost.
+`python index.py run-job <id>` runs a queued job by hand, which is what each Cloud Run Job
+execution does. It refuses a job that isn't `queued`, so a job never runs (or bills) twice.
+
 ## Reading summaries (free, no API calls)
 
 ```sh

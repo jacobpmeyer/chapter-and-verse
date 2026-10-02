@@ -31,7 +31,7 @@ class Settings:
 
     # Models
     summary_model: str = os.getenv("SUMMARY_MODEL", "claude-sonnet-5-5")
-    summary_effort: str = os.getenv("SUMMARY_EFFORT", "low")
+    summary_effort: str = os.getenv("SUMMARY_EFFORT", "medium")
     summary_context_limit: int = _int("SUMMARY_CONTEXT_LIMIT", 800_000)
     agent_model: str = os.getenv("AGENT_MODEL", "claude-opus-5-5")
     agent_effort: str = os.getenv("AGENT_EFFORT", "high")
@@ -63,7 +63,15 @@ class Settings:
     auth_disabled: bool = os.getenv("AUTH_DISABLED", "") == "1"  # local development only
     cors_origins: tuple = tuple(o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip())
     daily_budget_usd: float = _float("DAILY_BUDGET_USD", 5.0)
-    job_runner: str = os.getenv("JOB_RUNNER", "thread")  # thread | (later) cloud_run
+    db_pool_max: int = _int("DB_POOL_MAX", 10)  # per API process; Cloud SQL's smallest tier allows ~25 in total
+    # thread    = a background thread in the API process (local use)
+    # cloud_run = a Cloud Run Job execution per indexing job; needs CLOUD_RUN_JOB
+    job_runner: str = os.getenv("JOB_RUNNER", "thread")
+    cloud_run_job: str = os.getenv("CLOUD_RUN_JOB", "")  # projects/<project>/locations/<region>/jobs/<job>
+    # Cloudflare Access: when both are set, every request except /health must carry a
+    # valid Access JWT (in addition to an API key). Unset locally.
+    cf_access_team_domain: str = os.getenv("CF_ACCESS_TEAM_DOMAIN", "")  # <team>.cloudflareaccess.com
+    cf_access_aud: str = os.getenv("CF_ACCESS_AUD", "")  # the Access application's AUD tag
 
 
 settings = Settings()

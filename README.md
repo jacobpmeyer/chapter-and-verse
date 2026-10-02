@@ -182,7 +182,7 @@ docker compose up -d --build      # Postgres + the API on http://localhost:8080
 
 | Endpoint | What it does |
 |---|---|
-| `POST /ask` | ask the agent; `conversation_id` continues a conversation; `stream: true` for Server-Sent Events |
+| `POST /ask` | ask the agent; `conversation_id` continues a conversation; `stream: true` for Server-Sent Events (recommended: answers can take over a minute, and the stream sends keep-alives so proxies don't time out) |
 | `POST /search` | raw vector search over passages and summaries (no LLM): for callers that bring their own model |
 | `GET /books`, `GET /books/{id}`, `GET /books/{id}/summary`, `…/chapters/{n}/summary` | the library and its summaries |
 | `POST /library/scan` | extract new or changed EPUBs (free); never discards paid work |
@@ -200,8 +200,17 @@ curl -X POST localhost:8080/ask -H "Authorization: Bearer $KEY" -H "Content-Type
   won't start without at least one.
 - **Daily budget:** `DAILY_BUDGET_USD` caps total daily spend. Every model call (agent and
   summaries) is logged with its cost, and spending endpoints return 429 once the cap is reached.
+- **Behind Cloudflare Access (deployment):** with `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD`
+  set, every request except `/health` must also carry the JWT that Access adds once someone logs
+  in or a service presents its service token. The API checks the signature against the team's
+  published keys, plus the audience, issuer and expiry. Without this check, the service's own URL
+  would bypass the login.
 - **Stateless:** conversations and indexing jobs live in Postgres, so the API can run as several
   instances, which is how it's built to deploy to Cloud Run.
+- **Where indexing runs:** locally, in a background thread (`JOB_RUNNER=thread`). Deployed, each
+  job runs as its own Cloud Run Job execution (`JOB_RUNNER=cloud_run`), which runs
+  `python index.py run-job <id>`. A thread can't be trusted with multi-minute work there, because
+  Cloud Run throttles an instance's CPU once the response has been sent.
 
 ## Testing
 
@@ -225,6 +234,13 @@ against a pgvector service container.
   - history is strictly append-only
   - the last step turns tools off
   - `max_tokens`, refusals and errors are handled without leaving the conversation invalid
+
+- **The Cloudflare Access check** runs against tokens signed with RSA keys generated for the test.
+  Tokens with the wrong audience or issuer, expired tokens, tokens signed by another key or with
+  HS256, and garbage are all rejected. `/health` stays open, and an API key is still required.
+- **Cloud Run Jobs** are started over faked HTTP. The tests check the request sent, that refusals
+  report Google's reason, and that `run-job` never runs a job twice and exits non-zero when one
+  fails.
 
 - **Database tests** run against a real Postgres + pgvector in a throwaway
   `chapter_and_verse_test` database. That database is created per run and dropped afterwards, and
@@ -252,10 +268,10 @@ Writing these tests found real bugs, now fixed and covered by regression tests:
 | [`agent.py`](agent.py) | REPL and the hand-written tool loop |
 | [`tools.py`](tools.py) | tool schemas the model sees, and the code that runs them |
 | [`db.py`](db.py), [`schema.sql`](schema.sql) | Postgres access and schema (`books`, `chapters`, `chunks`, `api_calls`) |
-| [`index.py`](index.py) | indexing CLI: `extract`, `status`, `book`, `summaries`, `search`, `backup` |
+| [`index.py`](index.py) | indexing CLI: `extract`, `status`, `book`, `summaries`, `search`, `backup`, `run-job` |
 | [`backup.py`](backup.py) | dated `pg_dump` archives, verified with `pg_restore --list`, with pruning |
 | [`api.py`](api.py), [`static/index.html`](static/index.html) | HTTP API (FastAPI) and the phone-friendly web page |
-| [`jobs.py`](jobs.py), [`stage.py`](stage.py) | estimate + index one book (shared by CLI, API, and future cloud jobs); library scan |
+| [`jobs.py`](jobs.py), [`stage.py`](stage.py) | estimate + index one book (shared by the CLI, the API and Cloud Run Jobs); library scan; job runners |
 | [`Dockerfile`](Dockerfile), [`docker-compose.yml`](docker-compose.yml) | the API image (non-root, `$PORT`-aware) and the local stack |
 | [`config.py`](config.py), [`tokens.py`](tokens.py) | settings from `.env`; local token estimate |
 | [`tests/`](tests) | pytest suite: synthetic-EPUB fixtures, fake Anthropic client |
