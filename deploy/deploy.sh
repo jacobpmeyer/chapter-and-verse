@@ -4,9 +4,9 @@
 #
 #   deploy/deploy.sh             # tagged with the current commit
 #
-# Access: the service is deployed requiring Google IAM (no public access). It
-# becomes public only once Cloudflare Access and the app's JWT check are on:
-# set PUBLIC=1 then (see deploy/README.md).
+# Access: the service is public only when env.yaml turns on the app's Cloudflare
+# Access check (CF_ACCESS_AUD). Otherwise it requires Google IAM, reachable only
+# through `gcloud run services proxy`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source deploy/config.sh
@@ -28,8 +28,11 @@ common=(
 )
 
 step "Service $SERVICE"
-access=--no-invoker-iam-check  # public: Cloudflare Access + the app's JWT check + API keys
-[ "${PUBLIC:-}" = 1 ] || access=--invoker-iam-check
+if grep -q '^CF_ACCESS_AUD: ..' deploy/env.yaml; then
+  access=--no-invoker-iam-check  # public: Cloudflare Access + the app's JWT check + API keys
+else
+  access=--invoker-iam-check     # private: Google IAM only
+fi
 gcloud run deploy "$SERVICE" "${common[@]}" \
   --service-account="$API_SA" --set-secrets="$API_SECRETS" \
   --execution-environment=gen2 \

@@ -28,3 +28,12 @@
     instead of an in-process thread, so a long job doesn't depend on a web request's instance.
   - **Cloudflare** DNS, and Access in front of the web page. Verify the Access JWT in the API, in
     addition to API keys.
+- [ ] **Check the books.jacobpm.com certificate renewed (by mid-December 2026).** Google's
+  certificate for the Cloud Run domain mapping expires 2026-12-31 and renews through an HTTP
+  challenge that passes through Cloudflare (Access bypasses `/.well-known/acme-challenge/`, and the
+  path reaches Google exactly as a direct request does). The first real renewal can't be tested
+  sooner. Check with `curl -vI https://books.jacobpm.com/health 2>&1 | grep 'expire date'`
+  through a DNS-only lookup, or `gcloud beta run domain-mappings describe --domain books.jacobpm.com
+  --region us-east1`. If it didn't renew, replace the domain mapping with a small Cloudflare Worker
+  that forwards to the `run.app` URL. Then Cloudflare's own edge certificate is the only one, and
+  there's no renewal to get through.
