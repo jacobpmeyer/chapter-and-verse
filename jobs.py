@@ -272,7 +272,7 @@ def get_runner():
     if settings.job_runner == "thread":
         return ThreadRunner()
     if settings.job_runner == "cloud_run":
-        if not settings.cloud_run_job:
-            raise RuntimeError("JOB_RUNNER=cloud_run needs CLOUD_RUN_JOB=projects/<project>/locations/<region>/jobs/<job>")
-        return CloudRunJobRunner(settings.cloud_run_job)
+        if not settings.indexing_job:
+            raise RuntimeError("JOB_RUNNER=cloud_run needs INDEXING_JOB=projects/<project>/locations/<region>/jobs/<job>")
+        return CloudRunJobRunner(settings.indexing_job)
     raise RuntimeError(f"unknown JOB_RUNNER={settings.job_runner!r} (use 'thread' or 'cloud_run')")

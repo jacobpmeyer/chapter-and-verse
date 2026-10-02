@@ -79,13 +79,13 @@ def configure(monkeypatch):
 def test_the_runner_is_chosen_by_setting(configure):
     configure(job_runner="thread")
     assert isinstance(jobs.get_runner(), jobs.ThreadRunner)
-    configure(job_runner="cloud_run", cloud_run_job=JOB)
+    configure(job_runner="cloud_run", indexing_job=JOB)
     runner = jobs.get_runner()
     assert isinstance(runner, jobs.CloudRunJobRunner) and runner.job_name == JOB
 
 
 @pytest.mark.parametrize("changes, message", [
-    ({"job_runner": "cloud_run", "cloud_run_job": ""}, "needs CLOUD_RUN_JOB"),
+    ({"job_runner": "cloud_run", "indexing_job": ""}, "needs INDEXING_JOB"),
     ({"job_runner": "celery"}, "unknown JOB_RUNNER='celery'"),
 ])
 def test_a_misconfigured_runner_is_an_error(configure, changes, message):
