@@ -13,7 +13,10 @@
   Wayward Girls* chapter 21 said Fern "is having a boy", a necklace prediction that turns out
   wrong, and a demo answer repeated it. Books summarized earlier keep their v4 summaries until
   they're regenerated: `python index.py book <id> --redo-summaries`, after a Cloud SQL backup.
-  Hendrix (≈ $1.55) first, then optionally Morrie (≈ $0.55) and *How to Read a Book* (≈ $1.30).
+  - [x] Hendrix, 2026-10-03: $1.54 (estimate $1.54). Chapter 20 now reads "Jasmine's necklace
+    pendulum tells Fern she is having a boy", and chapter 30 "The baby is a girl, not the boy Fern
+    expected". Asked whether Fern has a boy or a girl, the agent answered correctly, citing chapter 30.
+  - [ ] Optional: Morrie (≈ $0.55) and *How to Read a Book* (≈ $1.30).
 - [x] **Deploy to GCP.** Done: Cloud Run service and job, Cloud SQL, the library in Cloud
   Storage, Secret Manager, Cloudflare Access at books.jacobpm.com with the JWT verified in the API,
   and deploys from GitHub Actions through Workload Identity Federation. See the README's Deployment
