@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   unit:
     name: Unit tests (no database, no API calls)
@@ -47,3 +50,28 @@ jobs:
           cache-dependency-path: requirements*.txt
       - run: pip install -r requirements-dev.txt
       - run: pytest -m db
+
+  deploy:
+    name: Deploy to Cloud Run
+    # Only after both test jobs pass, and only for pushes to main. GCP enforces the same
+    # thing independently: its identity provider accepts tokens only from main of this repo.
+    needs: [unit, database]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write   # to exchange GitHub's OIDC token for short-lived GCP credentials
+    steps:
+      - uses: actions/checkout@v7
+      - uses: google-github-actions/auth@v3
+        with:
+          project_id: chapter-and-verse-510420
+          workload_identity_provider: projects/77330709121/locations/global/workloadIdentityPools/github/providers/chapter-and-verse
+          service_account: cv-deployer@chapter-and-verse-510420.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v3
+      - uses: docker/setup-buildx-action@v4
+      - run: gcloud auth configure-docker us-east1-docker.pkg.dev --quiet
+      - run: deploy/deploy.sh

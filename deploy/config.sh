@@ -16,6 +16,15 @@ SERVICE=cv-api                              # Cloud Run service: the API and web
 JOB=cv-index                                # Cloud Run Job: one execution per indexing job
 API_SA="cv-api@$PROJECT.iam.gserviceaccount.com"
 INDEXER_SA="cv-indexer@$PROJECT.iam.gserviceaccount.com"
+DEPLOYER_SA="cv-deployer@$PROJECT.iam.gserviceaccount.com"   # GitHub Actions releases
+
+# GitHub Actions deploys with Workload Identity Federation: no service account keys.
+# Numeric ids, not just names, so a renamed or re-created repo can't inherit access.
+GITHUB_REPO=jacobpmeyer/chapter-and-verse
+GITHUB_REPO_ID=1398895925
+GITHUB_OWNER_ID=49496782
+WIF_POOL=github
+WIF_PROVIDER=chapter-and-verse
 
 # Secret Manager secret -> environment variable
 API_SECRETS="ANTHROPIC_API_KEY=anthropic-api-key:latest,VOYAGE_API_KEY=voyage-api-key:latest,API_KEYS=api-keys:latest,DATABASE_URL=database-url:latest"

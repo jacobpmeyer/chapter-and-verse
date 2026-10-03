@@ -48,7 +48,8 @@ cv /library/scan '{}'              # extract them (free); then index each with c
 ### Releasing and operating
 
 ```sh
-deploy/deploy.sh                   # build, push, roll out the service and the job (tagged with the commit)
+git push                           # to main: tests, then GitHub Actions deploys (tagged with the commit)
+deploy/deploy.sh                   # deploy from this Mac (uncommitted work is tagged -dirty)
 gcloud run services logs read cv-api --region us-east1 --limit 50    # API log (no secrets)
 gcloud run jobs executions list --job cv-index --region us-east1     # indexing runs
 gcloud sql backups list --instance cv-db                             # daily backups (7 kept)

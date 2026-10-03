@@ -96,4 +96,40 @@ done
 gcloud secrets add-iam-policy-binding api-keys --member="serviceAccount:$API_SA" \
   --role=roles/secretmanager.secretAccessor >/dev/null
 
+step "GitHub Actions deploys (Workload Identity Federation, no keys)"
+gcloud services enable sts.googleapis.com
+number=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
+exists gcloud iam workload-identity-pools describe "$WIF_POOL" --location=global ||
+  gcloud iam workload-identity-pools create "$WIF_POOL" --location=global --display-name="GitHub Actions"
+# Only pushes to main of this repository (by numeric id) can get a token at all.
+condition="assertion.repository_id == '$GITHUB_REPO_ID' && assertion.repository_owner_id == '$GITHUB_OWNER_ID' && assertion.ref == 'refs/heads/main'"
+mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_id=assertion.repository_id,attribute.ref=assertion.ref"
+if exists gcloud iam workload-identity-pools providers describe "$WIF_PROVIDER" --location=global --workload-identity-pool="$WIF_POOL"; then
+  gcloud iam workload-identity-pools providers update-oidc "$WIF_PROVIDER" --location=global \
+    --workload-identity-pool="$WIF_POOL" --attribute-mapping="$mapping" --attribute-condition="$condition" >/dev/null
+else
+  gcloud iam workload-identity-pools providers create-oidc "$WIF_PROVIDER" --location=global \
+    --workload-identity-pool="$WIF_POOL" --display-name="$GITHUB_REPO" \
+    --issuer-uri="https://token.actions.githubusercontent.com" \
+    --attribute-mapping="$mapping" --attribute-condition="$condition"
+fi
+
+exists gcloud iam service-accounts describe "$DEPLOYER_SA" ||
+  gcloud iam service-accounts create cv-deployer --display-name="Chapter and Verse deploys (GitHub Actions)"
+# The repository's workflows may act as the deployer...
+gcloud iam service-accounts add-iam-policy-binding "$DEPLOYER_SA" --role=roles/iam.workloadIdentityUser \
+  --member="principalSet://iam.googleapis.com/projects/$number/locations/global/workloadIdentityPools/$WIF_POOL/attribute.repository_id/$GITHUB_REPO_ID" >/dev/null
+# ...which can push images to this one repository, deploy Cloud Run revisions (not change who may
+# call them: that's run.admin), and run them as the two runtime service accounts.
+gcloud projects add-iam-policy-binding "$PROJECT" --member="serviceAccount:$DEPLOYER_SA" \
+  --role=roles/run.developer --condition=None >/dev/null
+gcloud artifacts repositories add-iam-policy-binding "$REPO" --location="$REGION" \
+  --member="serviceAccount:$DEPLOYER_SA" --role=roles/artifactregistry.writer >/dev/null
+for sa in "$API_SA" "$INDEXER_SA"; do
+  gcloud iam service-accounts add-iam-policy-binding "$sa" --member="serviceAccount:$DEPLOYER_SA" \
+    --role=roles/iam.serviceAccountUser >/dev/null
+done
+echo "  workload_identity_provider: projects/$number/locations/global/workloadIdentityPools/$WIF_POOL/providers/$WIF_PROVIDER"
+echo "  service_account: $DEPLOYER_SA"
+
 step "Done. Next: deploy/sync-library.sh, restore the database, then deploy/deploy.sh"

@@ -7,6 +7,10 @@
 # Access: the service is public only when env.yaml turns on the app's Cloudflare
 # Access check (CF_ACCESS_AUD). Otherwise it requires Google IAM, reachable only
 # through `gcloud run services proxy`.
+#
+# Access settings are only sent when they differ from what's live. Changing them
+# needs setIamPolicy (roles/run.admin); a routine release, e.g. from GitHub
+# Actions, needs only roles/run.developer.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source deploy/config.sh
@@ -16,9 +20,7 @@ tag=$(git rev-parse --short HEAD)
 image="$IMAGE_BASE:$tag"
 
 step "Build and push $image"
-if [ -z "${SKIP_BUILD:-}" ]; then  # CI builds on its own runner and sets SKIP_BUILD
-  docker buildx build --platform linux/amd64 --tag "$image" --push .
-fi
+docker buildx build --platform linux/amd64 --tag "$image" --push .
 
 common=(
   --image="$image" --region="$REGION"
@@ -29,9 +31,17 @@ common=(
 
 step "Service $SERVICE"
 if grep -q '^CF_ACCESS_AUD: ..' deploy/env.yaml; then
-  access=--no-invoker-iam-check  # public: Cloudflare Access + the app's JWT check + API keys
+  want=true   # public: Cloudflare Access + the app's JWT check + API keys
 else
-  access=--invoker-iam-check     # private: Google IAM only
+  want=false  # private: Google IAM only
+fi
+live=$(gcloud run services describe "$SERVICE" --region="$REGION" --format=json 2>/dev/null |
+  python3 -c "import json,sys; print(json.load(sys.stdin)['metadata'].get('annotations', {}).get('run.googleapis.com/invoker-iam-disabled', 'false'))" ||
+  echo none)
+access=()
+if [ "$live" != "$want" ]; then
+  echo "Changing public access: invoker IAM check disabled $live -> $want"
+  [ "$want" = true ] && access=(--no-invoker-iam-check) || access=(--invoker-iam-check)
 fi
 gcloud run deploy "$SERVICE" "${common[@]}" \
   --service-account="$API_SA" --set-secrets="$API_SECRETS" \
@@ -40,7 +50,7 @@ gcloud run deploy "$SERVICE" "${common[@]}" \
   --add-volume=name=library,type=cloud-storage,bucket="$BUCKET",readonly=true \
   --add-volume-mount=volume=library,mount-path=/library \
   --min-instances=0 --max-instances=2 --concurrency=10 --timeout=3600 \
-  "$access"
+  ${access[@]+"${access[@]}"}
 
 step "Job $JOB"
 # One task, no retries (a failed job is never silently re-run and re-billed), and
@@ -51,8 +61,11 @@ gcloud run jobs deploy "$JOB" "${common[@]}" \
   --tasks=1 --max-retries=0 --task-timeout=3h
 
 # The API starts executions (with the job id as an argument) and may do nothing else with the job.
-gcloud run jobs add-iam-policy-binding "$JOB" --region="$REGION" --member="serviceAccount:$API_SA" \
-  --role=roles/run.jobsExecutorWithOverrides >/dev/null
+if ! gcloud run jobs get-iam-policy "$JOB" --region="$REGION" --format=json |
+     grep -q "serviceAccount:$API_SA"; then
+  gcloud run jobs add-iam-policy-binding "$JOB" --region="$REGION" --member="serviceAccount:$API_SA" \
+    --role=roles/run.jobsExecutorWithOverrides >/dev/null
+fi
 
 step "Deployed $tag"
 gcloud run services describe "$SERVICE" --region="$REGION" --format='value(status.url)'

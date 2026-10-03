@@ -7,7 +7,7 @@ Scripts that create and update the cloud deployment. Every resource name lives i
 |---|---|
 | [`setup.sh`](setup.sh) | once, before the first deploy. It's safe to re-run: it only creates what's missing and never replaces a secret. |
 | [`sync-library.sh`](sync-library.sh) | after adding books in Calibre, then `POST /library/scan` |
-| [`deploy.sh`](deploy.sh) | every release: build, push, update the service and the job |
+| [`deploy.sh`](deploy.sh) | every release: build, push, update the service and the job. GitHub Actions runs it after the tests pass on `main`; run it by hand only to change access settings, or to deploy uncommitted work (tagged `-dirty`) |
 | [`cloudflare.py`](cloudflare.py) | DNS and Cloudflare Access for books.jacobpm.com (`--proxied` once Google has issued the certificate) |
 | [`cloud-shell.sh`](cloud-shell.sh) | `source` it to point this terminal at the cloud database and get the `cv` command |
 
@@ -28,6 +28,19 @@ Each workload has its own service account:
   executions of `cv-index`. That last permission comes from
   `roles/run.jobsExecutorWithOverrides`, granted on that one job only.
 - **`cv-indexer`:** connects to Cloud SQL and reads 3 secrets.
+- **`cv-deployer`:** used by GitHub Actions. It pushes images to the `cv` repository, deploys
+  revisions (`roles/run.developer`), and runs them as `cv-api` / `cv-indexer`. It can't change who
+  may call the service: that takes `setIamPolicy` (`roles/run.admin`), which only a person has, so
+  `deploy.sh` sends access settings only when they differ from what's live.
+
+## Deploys from GitHub Actions
+
+The `deploy` job in [`.github/workflows/tests.yml`](../.github/workflows/tests.yml) runs after
+both test jobs pass on a push to `main`. It authenticates with **Workload Identity Federation**:
+GitHub's short-lived OIDC token is exchanged for credentials of `cv-deployer`, so no service
+account key exists anywhere. The identity provider accepts tokens only for `refs/heads/main` of
+this repository, matched by numeric repository and owner ids, so forks, other branches and pull
+requests can't deploy even if a workflow is changed. Each image is tagged with its commit.
 
 ## How a request gets in
 
