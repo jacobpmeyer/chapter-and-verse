@@ -7,7 +7,8 @@ Ask questions about your own ebook library and get answers that cite the book an
 This project indexes a Calibre EPUB library into Postgres + pgvector, builds chapter- and
 book-level summaries with Claude, and answers questions through a **hand-written tool-calling
 agent**. There is no agent framework: the loop is about 120 lines of plain Python on the Anthropic
-SDK. Everything runs locally except the model and embedding API calls.
+SDK. It's deployed on Cloud Run + Cloud SQL behind Cloudflare Access, and the same code runs
+entirely locally with Docker Compose.
 
 ![The agent answering "What are the themes of Witchcraft for Wayward Girls?" in the terminal](demo.gif)
 
@@ -289,8 +290,9 @@ Writing these tests found real bugs, now fixed and covered by regression tests:
   counts come from the API.
 - **Single-user:** API keys protect the service, but there are no user accounts; everyone with a
   key sees the same library and conversations.
-- **Not deployed yet:** the API is built for Cloud Run + Cloud SQL, with Cloudflare Access in front
-  of the web page. That deployment is the next phase ([TODO.md](TODO.md)).
+- **Small, shared-core database:** the deployed Cloud SQL instance is `db-f1-micro`, which has no
+  SLA. That's a deliberate cost choice for a single-user service (~$8 a month instead of ~$49 for a
+  dedicated core).
 
 ## How this was built
 
