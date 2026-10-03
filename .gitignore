@@ -14,3 +14,6 @@ htmlcov/
 pipeline.png
 *-summaries.md
 dump/
+
+# google-github-actions/auth writes short-lived credentials into the checkout
+gha-creds-*.json

@@ -10,3 +10,4 @@ tests/
 *.png
 demo.tape
 db/
+gha-creds-*.json
