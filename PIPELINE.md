@@ -78,10 +78,20 @@ sequenceDiagram
 ```
 
 The HTTP API (`api.py`) runs this same flow:
+- **Adding books:** `POST /library/scan` runs step 2 over `LIBRARY_PATH`. It never re-extracts a
+  book that has paid work.
 - **Indexing:** `POST /books/{id}/index` runs step 3 through `jobs.py`, the same code as
-  `index.py book`.
+  `index.py book`, after checking the estimate against the caller's `max_cost_usd`. Locally the
+  job runs in a background thread. When deployed, the API starts a Cloud Run Job execution of
+  `python index.py run-job <id>`, which re-estimates, refuses to exceed the limit, and records
+  progress and the actual cost on the job.
 - **Questions:** `POST /ask` runs step 4's agent loop, storing the conversation in Postgres
   instead of keeping it in memory.
+
+Deployed, step 1 also uploads the book: `deploy/sync-library.sh` copies the Calibre library to a
+Cloud Storage bucket, which the API reads as a read-only folder at `LIBRARY_PATH`. Every other
+step is the same code, with Cloud SQL in place of the local Postgres. The
+[README](README.md#deployment) shows where each piece runs.
 
 ## The same flow in words
 

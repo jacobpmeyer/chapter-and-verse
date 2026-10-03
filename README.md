@@ -31,7 +31,7 @@ slide an egg over Zinnia's belly while chanting "Rise and fill and leave behind"
 
 ```mermaid
 flowchart TB
-    subgraph IDX["Indexing · CLI, one book at a time, cost shown before it runs"]
+    subgraph IDX["Indexing · one book at a time, cost shown before it runs"]
         direction LR
         EPUB[/"Calibre library<br/>EPUB + OPF"/] --> EXT["Extract & chunk<br/>TOC-based chapters,<br/>paragraph-safe passages"]
         EXT --> SUM["Summarize<br/>chapter → book summaries"]
@@ -121,7 +121,7 @@ belongs to exactly one chapter, citations are always clean.
 - **Filtered vector search:** searches restricted to one book or one summary level use pgvector's
   iterative HNSW scans, so filters don't silently return fewer results than asked for.
 - **Soft weak-match flag:** similarity scores swing with how a query is worded. In testing, correct
-  hits scored 0.26–0.66 and a short correct query scored 0.17. So low scores are flagged as "check
+  hits scored 0.26–0.69 and a short correct query scored 0.17. So low scores are flagged as "check
   relevance before relying on these" rather than "no answer", and the model decides from content.
 - **Model tracking:** each vector stores the model that produced it, so switching embedding models
   marks old vectors stale instead of mixing incompatible ones.
@@ -132,6 +132,7 @@ belongs to exactly one chapter, citations are always clean.
 |---|---|---|---|
 | *Tuesdays With Morrie* | 66K tokens, 27 chapters | ≈ $0.55 | memoir |
 | *Witchcraft for Wayward Girls* | 259K tokens, 38 chapters | ≈ $1.55 | novel; estimate $1.57 |
+| *How to Read a Book* | 244K tokens, 24 chapters | $1.30 | nonfiction; estimate $1.31; indexed by a Cloud Run Job in 4 minutes |
 | Agent question | 1–5 tool calls | ≈ $0.10–0.20 | Opus 5.5 at `high` effort, with prompt caching |
 
 The indexing costs are summaries (Sonnet 5.5, `medium` effort) plus embeddings
@@ -175,8 +176,8 @@ database access.
 docker compose up -d --build      # Postgres + the API on http://localhost:8080
 ```
 
-- **Web page:** open `http://localhost:8080` (or your computer's address from a phone on the same
-  network). It asks questions with the answer streaming in, shows tool calls and reasoning as they
+- **Web page:** open `http://localhost:8080` locally. The deployed one is behind a login (see
+  [Deployment](#deployment)). It asks questions with the answer streaming in, shows tool calls and reasoning as they
   happen, browses the library, and indexes a book after confirming its estimated cost.
 - **API reference:** interactive docs at `/docs`. The same API is how other projects use this as a
   service.
@@ -212,6 +213,79 @@ curl -X POST localhost:8080/ask -H "Authorization: Bearer $KEY" -H "Content-Type
   job runs as its own Cloud Run Job execution (`JOB_RUNNER=cloud_run`), which runs
   `python index.py run-job <id>`. A thread can't be trusted with multi-minute work there, because
   Cloud Run throttles an instance's CPU once the response has been sent.
+
+## Deployment
+
+The service runs on Google Cloud behind Cloudflare. Pushing to `main` deploys it once the tests
+pass.
+
+```mermaid
+flowchart TB
+    PERSON(["Phone / browser"]) --> ACCESS
+    PROGRAM(["Programs<br/>e.g. another app, the CLI"]) --> ACCESS
+
+    subgraph CF["Cloudflare · books.jacobpm.com"]
+        ACCESS["Access<br/>email PIN or service token → signed JWT"]
+    end
+
+    subgraph GCP["Google Cloud · us-east1"]
+        RUN["Cloud Run service<br/>API + web page<br/>checks JWT + API key"]
+        JOB["Cloud Run Job<br/>index.py run-job &lt;id&gt;"]
+        GCS[/"Cloud Storage<br/>EPUB library"/]
+        SQL[("Cloud SQL<br/>Postgres 18 + pgvector")]
+        SECRETS["Secret Manager"]
+        AR["Artifact Registry"]
+    end
+
+    MODELS{{"Anthropic · Voyage AI"}}
+    GH["GitHub Actions<br/>tests → deploy"]
+
+    ACCESS -- "JWT" --> RUN
+    RUN -- "read-only mount" --> GCS
+    RUN -- "one execution per indexing job" --> JOB
+    RUN --> SQL
+    JOB --> SQL
+    SECRETS -.-> RUN
+    SECRETS -.-> JOB
+    RUN <--> MODELS
+    JOB <--> MODELS
+    GH -- "Workload Identity Federation<br/>(no keys)" --> AR
+    AR -. "image per commit" .-> RUN
+    AR -.-> JOB
+```
+
+| Piece | Runs on | Why |
+|---|---|---|
+| API + web page | Cloud Run service | scales to zero; stateless, since conversations and jobs live in Postgres |
+| Indexing | Cloud Run Job, one execution per book | runs to completion without a web request keeping it alive; no retries, so a failure never re-bills |
+| Database | Cloud SQL, PostgreSQL 18 + pgvector 0.8 | iterative HNSW scans need pgvector ≥ 0.8; reached only through the IAM-checked Cloud SQL connector |
+| EPUB library | Cloud Storage bucket, mounted read-only | book paths are stored relative to the library, so the same rows work locally and in the cloud |
+| Keys | Secret Manager | each service account can read only the secrets it uses |
+| Front door | Cloudflare DNS + Access | login for people, service tokens for programs |
+
+**Three layers of access control.**
+1. **Cloudflare Access** decides who gets in: an email one-time PIN, allowed for one address, or a
+   service token per calling program, so each can be revoked alone.
+2. **The app verifies the JWT** that Access adds (signature, audience, issuer, expiry). The
+   service's own `run.app` URL is public, so without this check it would bypass the login. It
+   answers 403 to anything that didn't come through Access.
+3. **The API key** is still required on every endpoint.
+
+**Least privilege.** Each workload has its own service account:
+- The API's account can start executions of the indexing job, but can't change the job.
+- The indexer's account can't read the API key.
+- GitHub Actions deploys through Workload Identity Federation: GCP accepts tokens only from
+  `main` of this repository, matched by numeric ids, so no service account key exists. The
+  deployer can ship new revisions but can't change who may call the service.
+
+**Cost:** about $10 a month at list prices, mostly the database (`db-f1-micro` $7.67 plus storage
+and backups). Cloud Run, Cloud Storage and Cloudflare fall within free tiers at this scale, and
+Secret Manager costs a few cents. Model calls are billed separately and capped by `DAILY_BUDGET_USD`.
+
+Everything is created by re-runnable scripts in [`deploy/`](deploy): `setup.sh` (GCP),
+`cloudflare.py` (DNS + Access), `deploy.sh` (releases). [deploy/README.md](deploy/README.md) has
+the details. The deployed database is the primary copy; Docker Compose remains the local
+development environment.
 
 ## Testing
 
@@ -274,6 +348,7 @@ Writing these tests found real bugs, now fixed and covered by regression tests:
 | [`api.py`](api.py), [`static/index.html`](static/index.html) | HTTP API (FastAPI) and the phone-friendly web page |
 | [`jobs.py`](jobs.py), [`stage.py`](stage.py) | estimate + index one book (shared by the CLI, the API and Cloud Run Jobs); library scan; job runners |
 | [`Dockerfile`](Dockerfile), [`docker-compose.yml`](docker-compose.yml) | the API image (non-root, `$PORT`-aware) and the local stack |
+| [`deploy/`](deploy), [`.github/workflows/tests.yml`](.github/workflows/tests.yml) | GCP and Cloudflare setup scripts, releases; CI tests, then deploys `main` |
 | [`config.py`](config.py), [`tokens.py`](tokens.py) | settings from `.env`; local token estimate |
 | [`tests/`](tests) | pytest suite: synthetic-EPUB fixtures, fake Anthropic client |
 
@@ -288,8 +363,14 @@ Writing these tests found real bugs, now fixed and covered by regression tests:
   --force`) means paying for summaries again, even if the text barely changed.
 - **Local token estimates** (characters ÷ 3.8) are used only for chunk sizing and dry runs. Real
   counts come from the API.
-- **Single-user:** API keys protect the service, but there are no user accounts; everyone with a
-  key sees the same library and conversations.
+- **Single-user:** Cloudflare Access and API keys protect the service, but there are no user
+  accounts; everyone who gets in sees the same library and conversations.
+- **Non-streamed answers through Cloudflare:** Cloudflare's plans below Enterprise drop responses that
+  take more than ~100 seconds to start. Long `/ask` calls should use `stream: true`, which responds
+  immediately and sends keep-alives.
+- **Custom domain:** `books.jacobpm.com` uses Cloud Run domain mapping, a Preview feature. Its
+  Google-managed certificate renews through an HTTP challenge that passes through Cloudflare. That
+  path works today, but the first renewal (due by December 2026) hasn't happened yet.
 - **Small, shared-core database:** the deployed Cloud SQL instance is `db-f1-micro`, which has no
   SLA. That's a deliberate cost choice for a single-user service (~$8 a month instead of ~$49 for a
   dedicated core).
@@ -308,3 +389,8 @@ Several of the decisions above came from that testing:
 - **Read-only agent:** I kept indexing in the CLI, so the agent can't spend money on its own.
 - **Extraction fixes:** the opening-frame and part-divider fixes came from testing on a novel I'd
   just read, where I could tell what the extractor should have kept.
+- **Deployment:** I chose GCP with Cloud SQL (over Neon) and Cloudflare Access in front, and plain
+  `gcloud` scripts over Terraform. Claude Code checked current prices and product limits before
+  each choice. Deploying turned up two things worth fixing first: Cloud Run reserves the
+  environment variable name `CLOUD_RUN_JOB`, and a summary-effort default would have quietly
+  dropped to `low` in the cloud, where there's no `.env`.

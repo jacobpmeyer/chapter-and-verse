@@ -16,18 +16,10 @@
   or lie, say so, and don't state it as fact". Then bump `PROMPT_VERSION`. Existing books keep
   their old summaries until they're regenerated with `python index.py book <id> --redo-summaries`
   (Hendrix ≈ $1.55).
-- [ ] **Deploy to GCP (next phase).** The API is built for this; the remaining steps are
-  infrastructure:
-  - **Cloud SQL** for Postgres 18 with pgvector; restore from `python index.py backup`.
-  - **Cloud Run service** from the `Dockerfile`, with secrets (`ANTHROPIC_API_KEY`,
-    `VOYAGE_API_KEY`, `API_KEYS`, DB password) from Secret Manager.
-  - **The library in a Cloud Storage bucket,** mounted as a Cloud Run volume at `LIBRARY_PATH`.
-    Book paths are stored relative to it, so they carry over. Sync from Calibre with
-    `gcloud storage rsync`.
-  - **A `cloud_run` job runner:** indexing as a Cloud Run Job (`python index.py run-job <id>`)
-    instead of an in-process thread, so a long job doesn't depend on a web request's instance.
-  - **Cloudflare** DNS, and Access in front of the web page. Verify the Access JWT in the API, in
-    addition to API keys.
+- [x] **Deploy to GCP.** Done: Cloud Run service and job, Cloud SQL, the library in Cloud
+  Storage, Secret Manager, Cloudflare Access at books.jacobpm.com with the JWT verified in the API,
+  and deploys from GitHub Actions through Workload Identity Federation. See the README's Deployment
+  section and `deploy/`.
 - [ ] **Check the books.jacobpm.com certificate renewed (by mid-December 2026).** Google's
   certificate for the Cloud Run domain mapping expires 2026-12-31 and renews through an HTTP
   challenge that passes through Cloudflare (Access bypasses `/.well-known/acme-challenge/`, and the
