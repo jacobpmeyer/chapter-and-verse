@@ -147,3 +147,27 @@ def test_usage_cost_uses_model_prices():
     u.add(1_000_000, 100_000)
     assert u.cost("claude-sonnet-5-5") == pytest.approx(2.00 + 1.00)
     assert u.calls == 1
+
+
+# --------------------------------------------------------------------------- #
+# Beliefs and predictions aren't facts
+# --------------------------------------------------------------------------- #
+# A summary once stated a character's wrong prediction as fact ("Fern is having a
+# boy"), and the agent repeated it. Whether the model follows the rule can only be
+# judged by reading real summaries; these tests make sure the rule reaches every
+# call, including the condense step, where attributions are the easiest words to cut.
+
+ATTRIBUTION_RULE = "Attribute each one to whoever holds it"
+
+
+def test_every_summary_call_carries_the_attribution_rule():
+    kwargs = S._request_kwargs("<chapter>…</chapter>", 1000)  # chapter, book and condense calls alike
+    assert ATTRIBUTION_RULE in kwargs["system"]
+    assert "not \"the house is haunted\"" in kwargs["system"]  # the contrast, not just the rule
+
+
+def test_condensing_keeps_attributions(monkeypatch, ctx):
+    fake = FakeModel([words(380)])
+    monkeypatch.setattr(S, "call_model", fake)
+    S.enforce_length(None, words(520), 450, ctx, "chapter 21")
+    assert "keep every attribution" in fake.prompts[0][1]

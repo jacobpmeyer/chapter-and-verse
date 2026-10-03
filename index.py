@@ -243,6 +243,7 @@ def cmd_summaries(args: argparse.Namespace) -> None:
 
 def cmd_book(args: argparse.Namespace) -> None:
     import anthropic
+    import psycopg
 
     import db
     import embed
@@ -265,29 +266,36 @@ def cmd_book(args: argparse.Namespace) -> None:
             if _extract_one(conn, path, digest) is None:
                 sys.exit(1)
 
-    if args.redo_summaries and not args.dry_run:
-        db.delete_summaries(conn, book["id"])
-        print("  existing summaries deleted; regenerating")
-    stage = db.book_stages(conn, [book["id"]])[0]["stage"]
-    print(f"  stage: {stage}")
-
-    # One combined estimate (summaries + embeddings) and one confirmation.
+    # --redo-summaries deletes inside a transaction that only commits once the estimate
+    # is confirmed: the estimate prices the regeneration, and a dry run, a "no" or a
+    # failure leaves the paid summaries exactly as they were.
     client = anthropic.Anthropic()
-    print("Counting tokens (count_tokens is free)...")
-    est = jobs.estimate_book(conn, client, book["id"])
-    if est.plans:
-        summarize.print_estimate(conn, est.plans)
-    if est.embed_chunks:
-        embed.print_estimate(est.embed_chunks, est.embed_tokens, est.embed_cost)
-    if est.nothing_to_do:
-        print("\nNothing to do: this book is fully indexed.")
-        return
-    print(f"\nTOTAL for this book ≈ ${est.total:.2f}")
-    if args.dry_run:
-        print("DRY RUN: nothing generated.")
-        return
-    if not summarize.confirm(args.yes):
-        print("Aborted.")
+    proceed = False
+    with conn.transaction() as tx:
+        if args.redo_summaries:
+            db.delete_summaries(conn, book["id"])
+            print("  existing summaries will be regenerated (kept unless you confirm)")
+        print(f"  stage: {db.book_stages(conn, [book['id']])[0]['stage']}")
+
+        # One combined estimate (summaries + embeddings) and one confirmation.
+        print("Counting tokens (count_tokens is free)...")
+        est = jobs.estimate_book(conn, client, book["id"])
+        if est.plans:
+            summarize.print_estimate(conn, est.plans)
+        if est.embed_chunks:
+            embed.print_estimate(est.embed_chunks, est.embed_tokens, est.embed_cost)
+        if est.nothing_to_do:
+            print("\nNothing to do: this book is fully indexed.")
+            raise psycopg.Rollback(tx)
+        print(f"\nTOTAL for this book ≈ ${est.total:.2f}")
+        if args.dry_run:
+            print("DRY RUN: nothing generated" + (", nothing deleted." if args.redo_summaries else "."))
+            raise psycopg.Rollback(tx)
+        if not summarize.confirm(args.yes):
+            print("Aborted" + (": the existing summaries are kept." if args.redo_summaries else "."))
+            raise psycopg.Rollback(tx)
+        proceed = True  # leaving the block commits the deletion
+    if not proceed:
         return
 
     result = jobs.index_book(conn, client, est)

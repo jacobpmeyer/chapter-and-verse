@@ -7,15 +7,13 @@
   would exceed ~800K. Use exact token counts stored during Phase 2 instead of the
   chars/3.8 estimate. Revisit only if the agent's answers on long books turn out
   to be weak.
-- [ ] **Summaries should flag beliefs, predictions, and lies.** The chapter 21 summary of
-  *Witchcraft for Wayward Girls* says Fern "is having a boy". In the book, that's a
-  necklace-swinging prediction that turns out wrong: the baby is a girl, as the chapter 31
-  summary says. When summaries contradict each other, the agent can pick the wrong one (a demo
-  take said "Fern names her son Charlie"). Fix: add an instruction to `CHAPTER_INSTRUCTIONS` in
-  `summarize.py` along the lines of "when something is a character's belief, prediction, rumor
-  or lie, say so, and don't state it as fact". Then bump `PROMPT_VERSION`. Existing books keep
-  their old summaries until they're regenerated with `python index.py book <id> --redo-summaries`
-  (Hendrix ≈ $1.55).
+- [ ] **Regenerate summaries written before prompt v5.** Summaries now attribute beliefs,
+  predictions, rumors and lies to whoever holds them instead of stating them as fact (`SYSTEM` and
+  the condense prompt in `summarize.py`, `PROMPT_VERSION = "v5"`). The trigger: *Witchcraft for
+  Wayward Girls* chapter 21 said Fern "is having a boy", a necklace prediction that turns out
+  wrong, and a demo answer repeated it. Books summarized earlier keep their v4 summaries until
+  they're regenerated: `python index.py book <id> --redo-summaries`, after a Cloud SQL backup.
+  Hendrix (≈ $1.55) first, then optionally Morrie (≈ $0.55) and *How to Read a Book* (≈ $1.30).
 - [x] **Deploy to GCP.** Done: Cloud Run service and job, Cloud SQL, the library in Cloud
   Storage, Secret Manager, Cloudflare Access at books.jacobpm.com with the JWT verified in the API,
   and deploys from GitHub Actions through Workload Identity Federation. See the README's Deployment

@@ -27,9 +27,10 @@ from config import FALLBACK_MODELS, PRICES, settings
 from stage import Progress, StageResult, report
 from tokens import estimate_tokens
 
-# Bump when the prompts change in a way that changes output length, so the
-# estimate stops averaging over calls made with the old prompts.
-PROMPT_VERSION = "v4"
+# Bump when the prompts change, so the estimate stops averaging over calls made
+# with the old prompts. Logged on every call (api_calls.prompt_version).
+# v5: beliefs, predictions, rumors and lies are attributed, not stated as fact.
+PROMPT_VERSION = "v5"
 
 CHAPTER_MAX_TOKENS = 16_000
 BOOK_MAX_TOKENS = 32_000
@@ -50,7 +51,14 @@ themes, and arcs, so be specific: name characters, places, objects, and concepts
 exactly as the book does, and prefer concrete details over generalities. Write in \
 present tense. Never invent anything that isn't in the text. Spoilers are expected; \
 this index is for someone who has read the book. The book may be fiction or \
-nonfiction; where the instructions give alternatives, use the one that fits."""
+nonfiction; where the instructions give alternatives, use the one that fits.
+
+Keep what the book establishes as true separate from what characters believe, \
+predict, hope, suspect, hear, or claim, since those can turn out to be wrong or \
+to be lies. Attribute each one to whoever holds it, and say how they came by it: \
+write "a neighbor insists the house is haunted", not "the house is haunted". If \
+the text confirms or contradicts one, say so. In nonfiction, likewise keep the \
+author's own claims apart from views the author reports or argues against."""
 
 # --------------------------------------------------------------------------- #
 # Lengths
@@ -102,8 +110,9 @@ BOOK_SECTIONS = [  # (heading, base word range, guidance)
 
 CONDENSE_INSTRUCTIONS = """The summary above is {words} words, but the limit is {limit} words. \
 Rewrite it to at most {target} words. Keep exactly the same headings. Keep the most specific \
-names, quotes, and details; cut repetition and generalities first. Don't change or add any facts. \
-Output only the Markdown."""
+names, quotes, and details; cut repetition and generalities first. Don't change or add any facts, \
+and keep every attribution: a belief, prediction, rumor, or claim stays attributed to whoever holds \
+it, never shortened into a plain fact. Output only the Markdown."""
 
 
 def book_words(exact_tokens: int) -> tuple[tuple[int, int], float]:
